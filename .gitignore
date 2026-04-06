@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+
+# ASRbench runtime
+~/.asrbench/
+*.db
+*.db-wal
+*.db-shm
+
+# Audio / model artifacts
+*.npy
+*.pt
+*.bin
+*.gguf
+*.onnx
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Type checking
+.mypy_cache/
+
+# Ruff
+.ruff_cache/
+
+# Node / Svelte UI build
+node_modules/
+ui/dist/
+ui/.svelte-kit/
+asrbench/static/bundle.*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
