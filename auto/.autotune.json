@@ -1,9 +1,9 @@
 {
-  "target": "asrbench/engine/optimizer.py",
+  "target": "asrbench/engine/search/trial.py",
   "metric": "latency_ms",
   "direction": "lower",
   "secondary": "pass_rate",
   "bench_cmd": "python auto/eval_optimizer.py",
   "budget_sec": 60,
-  "tag": "2026-04-10-optimizer"
+  "tag": "2026-04-10-trial"
 }

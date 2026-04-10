@@ -84,7 +84,15 @@ def measure_latency() -> float:
 
 def measure_pass_rate() -> float:
     result = subprocess.run(
-        [sys.executable, "-m", "pytest", "tests/unit/test_iams_optimizer.py", "-q", "--tb=no"],
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "tests/unit/test_iams_optimizer.py",
+            "tests/unit/test_search_trial.py",
+            "-q",
+            "--tb=no",
+        ],
         capture_output=True,
         text=True,
         timeout=30,
