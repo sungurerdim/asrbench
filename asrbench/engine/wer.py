@@ -207,6 +207,9 @@ class WEREngine:
         """
         Bootstrap 95% confidence interval on corpus WER via per-segment resampling.
 
+        Pre-computes per-segment edit counts once, then resamples with numpy —
+        avoids calling process_words() 1000 times on the full corpus.
+
         Returns (ci_lower, ci_upper) — the 2.5th and 97.5th percentiles of the
         bootstrap distribution. Requires at least 2 segments; returns (0.0, 1.0)
         as a degenerate fallback for single-segment input.
@@ -214,22 +217,27 @@ class WEREngine:
         n = len(refs)
         if n < 2:
             return (0.0, 1.0)
-        rng = np.random.default_rng(seed)
-        pairs = list(zip(refs, hyps))
-        boot_wers: list[float] = []
-        for _ in range(n_boot):
-            indices = rng.integers(0, n, size=n)
-            sample_refs = [pairs[i][0] for i in indices]
-            sample_hyps = [pairs[i][1] for i in indices]
+
+        # Pre-compute per-segment errors and ref-lengths (one process_words call each)
+        errors = np.empty(n, dtype=np.float64)
+        ref_lens = np.empty(n, dtype=np.float64)
+        for i in range(n):
             try:
-                out = process_words(sample_refs, sample_hyps)
-                boot_wers.append(out.wer)
+                out = process_words([refs[i]], [hyps[i]])
+                errors[i] = out.substitutions + out.insertions + out.deletions
+                ref_lens[i] = max(len(refs[i].split()), 1)
             except Exception:
-                continue
-        if not boot_wers:
-            return (0.0, 1.0)
-        boot_arr = np.array(boot_wers)
-        return (float(np.percentile(boot_arr, 2.5)), float(np.percentile(boot_arr, 97.5)))
+                errors[i] = 0.0
+                ref_lens[i] = 1.0
+
+        # Bootstrap: resample indices, compute corpus WER = sum(errors) / sum(ref_lens)
+        rng = np.random.default_rng(seed)
+        all_indices = rng.integers(0, n, size=(n_boot, n))
+        boot_errors = errors[all_indices]  # (n_boot, n)
+        boot_refs = ref_lens[all_indices]  # (n_boot, n)
+        boot_wers = boot_errors.sum(axis=1) / boot_refs.sum(axis=1)
+
+        return (float(np.percentile(boot_wers, 2.5)), float(np.percentile(boot_wers, 97.5)))
 
     def _wilcoxon(self, refs: list[str], hyps: list[str]) -> float | None:
         """Wilcoxon signed-rank test on per-segment WER. Returns p-value or None on failure."""
