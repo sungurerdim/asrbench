@@ -155,7 +155,7 @@ class WEREngine:
 
         wilcoxon_p = self._wilcoxon(wer_out) if len(refs) >= 100 else None
         leakage = self._check_leakage(model_family, dataset_source)
-        ci_lower, ci_upper = self._bootstrap_wer_ci(norm_refs, norm_hyps)
+        ci_lower, ci_upper = self._bootstrap_wer_ci(wer_out)
 
         return {
             "wer": wer_out.wer,
@@ -201,43 +201,43 @@ class WEREngine:
 
     def _bootstrap_wer_ci(
         self,
-        refs: list[str],
-        hyps: list[str],
+        wer_out: Any,
         n_boot: int = 1000,
         seed: int = 42,
     ) -> tuple[float, float]:
         """
         Bootstrap 95% confidence interval on corpus WER via per-segment resampling.
 
-        Pre-computes per-segment edit counts once, then resamples with numpy —
-        avoids calling process_words() 1000 times on the full corpus.
+        Extracts per-segment error counts from the already-computed WordOutput
+        alignments — zero additional process_words() calls.
 
         Returns (ci_lower, ci_upper) — the 2.5th and 97.5th percentiles of the
         bootstrap distribution. Requires at least 2 segments; returns (0.0, 1.0)
         as a degenerate fallback for single-segment input.
         """
-        n = len(refs)
+        n = len(wer_out.alignments)
         if n < 2:
             return (0.0, 1.0)
 
-        # Pre-compute per-segment errors and ref-lengths (one process_words call each)
+        # Extract per-segment errors and ref-lengths from existing alignment
         errors = np.empty(n, dtype=np.float64)
         ref_lens = np.empty(n, dtype=np.float64)
         for i in range(n):
-            try:
-                out = process_words([refs[i]], [hyps[i]])
-                errors[i] = out.substitutions + out.insertions + out.deletions
-                ref_lens[i] = max(len(refs[i].split()), 1)
-            except Exception:
-                errors[i] = 0.0
-                ref_lens[i] = 1.0
+            alignment = wer_out.alignments[i]
+            ref_tokens = wer_out.references[i]
+            seg_errors = 0
+            for chunk in alignment:
+                if chunk.type == "substitute" or chunk.type == "delete":
+                    seg_errors += chunk.ref_end_idx - chunk.ref_start_idx
+                elif chunk.type == "insert":
+                    seg_errors += chunk.hyp_end_idx - chunk.hyp_start_idx
+            errors[i] = seg_errors
+            ref_lens[i] = max(len(ref_tokens), 1)
 
         # Bootstrap: resample indices, compute corpus WER = sum(errors) / sum(ref_lens)
         rng = np.random.default_rng(seed)
         all_indices = rng.integers(0, n, size=(n_boot, n))
-        boot_errors = errors[all_indices]  # (n_boot, n)
-        boot_refs = ref_lens[all_indices]  # (n_boot, n)
-        boot_wers = boot_errors.sum(axis=1) / boot_refs.sum(axis=1)
+        boot_wers = errors[all_indices].sum(axis=1) / ref_lens[all_indices].sum(axis=1)
 
         return (float(np.percentile(boot_wers, 2.5)), float(np.percentile(boot_wers, 97.5)))
 
