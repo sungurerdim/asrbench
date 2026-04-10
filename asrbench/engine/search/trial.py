@@ -25,7 +25,6 @@ the search layers — every algorithm can be validated against known optima.
 from __future__ import annotations
 
 import hashlib
-import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
