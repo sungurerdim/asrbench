@@ -68,6 +68,10 @@ def get_lang_notes(lang: str) -> list[str]:
     return list(_LANG_NOTES.get(lang, []))
 
 
+_RE_AR_DIACRITICS = re.compile(r"[\u064B-\u065F\u0670]")
+_RE_AR_ALEF = re.compile(r"[\u0622\u0623\u0625]")
+
+
 def _normalize_arabic(text: str) -> str:
     """
     Arabic-specific normalization: remove diacritics (harakat), normalize alef
@@ -75,13 +79,9 @@ def _normalize_arabic(text: str) -> str:
 
     No external dependencies — stdlib re + unicodedata only.
     """
-    # Remove diacritics (harakat) and other short vowel marks
-    text = re.sub(r"[\u064B-\u065F\u0670]", "", text)
-    # Normalize alef variants: آ (U+0622), أ (U+0623), إ (U+0625) → ا (U+0627)
-    text = re.sub(r"[\u0622\u0623\u0625]", "\u0627", text)
-    # Remove tatweel / kashida (U+0640)
+    text = _RE_AR_DIACRITICS.sub("", text)
+    text = _RE_AR_ALEF.sub("\u0627", text)
     text = text.replace("\u0640", "")
-    # Normalize alef maqsura: ى (U+0649) → ي (U+064A)
     text = text.replace("\u0649", "\u064a")
     return text
 
