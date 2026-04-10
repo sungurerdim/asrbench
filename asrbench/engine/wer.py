@@ -152,7 +152,7 @@ class WEREngine:
         wer_out = process_words(norm_refs, norm_hyps)
         cer_out = process_characters(norm_refs, norm_hyps)
 
-        wilcoxon_p = self._wilcoxon(norm_refs, norm_hyps) if len(refs) >= 100 else None
+        wilcoxon_p = self._wilcoxon(wer_out) if len(refs) >= 100 else None
         leakage = self._check_leakage(model_family, dataset_source)
         ci_lower, ci_upper = self._bootstrap_wer_ci(norm_refs, norm_hyps)
 
@@ -239,14 +239,19 @@ class WEREngine:
 
         return (float(np.percentile(boot_wers, 2.5)), float(np.percentile(boot_wers, 97.5)))
 
-    def _wilcoxon(self, refs: list[str], hyps: list[str]) -> float | None:
+    def _wilcoxon(self, wer_out: Any) -> float | None:
         """Wilcoxon signed-rank test on per-segment WER. Returns p-value or None on failure."""
         try:
             from scipy.stats import wilcoxon
 
-            seg_wers_hyp = [process_words([r], [h]).wer for r, h in zip(refs, hyps)]
-            seg_wers_ref = [0.0] * len(seg_wers_hyp)
-            result = wilcoxon(seg_wers_ref, seg_wers_hyp, zero_method="wilcox")
+            # Extract per-segment WER from existing alignment data
+            seg_wers = []
+            for alignment, ref_tokens in zip(wer_out.alignments, wer_out.references):
+                n_ref = max(len(ref_tokens), 1)
+                errors = sum(1 for chunk in alignment if chunk.type != "equal")
+                seg_wers.append(errors / n_ref)
+            seg_zeros = [0.0] * len(seg_wers)
+            result = wilcoxon(seg_zeros, seg_wers, zero_method="wilcox")
             return float(result[1])  # type: ignore[arg-type]  # WilcoxonResult[1] == p-value
         except Exception:
             return None
