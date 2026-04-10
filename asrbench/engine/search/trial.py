@@ -62,15 +62,9 @@ class TrialResult:
         Deterministic key for config identity — used for result caching.
 
         Two TrialResults with the same config produce the same key, regardless
-        of field order in the dict. JSON serialization with sorted keys guarantees
-        stability; SHA-1 gives a short fixed-width identifier.
+        of field order in the dict.
         """
-        payload = json.dumps(
-            {k: self.config[k] for k in sorted(self.config.keys())},
-            default=str,
-            sort_keys=True,
-        )
-        return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
+        return str(hash(tuple(sorted(self.config.items()))))
 
     def with_phase(self, phase: str, reasoning: str = "") -> TrialResult:
         """Return a copy tagged with a different phase/reasoning (immutable update)."""
