@@ -1,0 +1,9 @@
+{
+  "target": "asrbench/engine/wer.py",
+  "metric": "latency_ms",
+  "direction": "lower",
+  "secondary": "pass_rate",
+  "bench_cmd": "python auto/eval_wer.py",
+  "budget_sec": 60,
+  "tag": "2026-04-10"
+}
