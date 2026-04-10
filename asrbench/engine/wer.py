@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 import re
 import unicodedata
@@ -168,6 +169,7 @@ class WEREngine:
             "lang_notes": get_lang_notes(lang),
         }
 
+    @functools.lru_cache(maxsize=4096)
     def _normalize(self, text: str, lang: str) -> str:
         if lang == "tr":
             text = unicodedata.normalize("NFC", text)
