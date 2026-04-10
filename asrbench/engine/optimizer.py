@@ -213,13 +213,13 @@ class IAMSOptimizer:
         pair_best = pairwise.best_overall()
         if pair_best is not None:
             best = self._update_best(best, pair_best)
+        promising = pairwise.promising_points()
         reasoning.append(
             f"Layer 3 (pairwise): scanned {len(pairwise.grids)} pairs, "
-            f"found {len(pairwise.promising_points())} promising off-diagonal points"
+            f"found {len(promising)} promising off-diagonal points"
         )
 
         # ---- Layer 4: Multi-start ----
-        promising = pairwise.promising_points()
         promising_sorted = sorted(promising, key=lambda t: t.score)[: self.multistart_candidates]
         start_trials = [layer2.final_trial] + promising_sorted
         multi = MultiStartSequentialDescent(
