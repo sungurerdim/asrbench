@@ -32,6 +32,34 @@ from typing import Any, Protocol, runtime_checkable
 import numpy as np
 
 
+def canonical_config_repr(config: Mapping[str, Any]) -> str:
+    """
+    Stable, order-independent string representation of a config dict.
+
+    Two configs with the same keys and values produce the same string
+    regardless of insertion order. Values are rendered via ``repr()`` so
+    ints, floats, bools, strings and None all round-trip losslessly and
+    distinctly (e.g. ``0`` vs ``0.0`` vs ``False`` are NOT collapsed).
+
+    Used by every TrialExecutor to build a cache key; centralized here so
+    synthetic and benchmark executors agree on the canonicalization rule.
+    """
+    return "|".join(f"{k}={config[k]!r}" for k in sorted(config))
+
+
+def _deterministic_key(payload: str) -> str:
+    """
+    Short (32-hex-char), process-independent digest of ``payload``.
+
+    Uses BLAKE2b-128 — faster than SHA-256 on short inputs and collision-safe
+    for the ~10^4 distinct configs a single study ever produces. Replaces the
+    previous ``str(hash(...))`` which was randomized per-process (PYTHONHASHSEED)
+    and therefore unstable across restarts and not suitable for any form of
+    cross-run comparison or durable logging.
+    """
+    return hashlib.blake2b(payload.encode("utf-8"), digest_size=16).hexdigest()
+
+
 @dataclass(frozen=True)
 class TrialResult:
     """
@@ -61,9 +89,32 @@ class TrialResult:
         Deterministic key for config identity — used for result caching.
 
         Two TrialResults with the same config produce the same key, regardless
-        of field order in the dict.
+        of field order in the dict, and regardless of Python process / session.
+        This key is NOT context-aware (does not include model/dataset/lang) —
+        use it only for intra-study identity checks. Cross-study reuse must go
+        through BenchmarkTrialExecutor._config_key which includes context.
         """
-        return str(hash(tuple(sorted(self.config.items()))))
+        return _deterministic_key(canonical_config_repr(self.config))
+
+    @classmethod
+    def from_db_row(
+        cls,
+        config: dict,
+        score: float,
+        score_ci: tuple[float, float],
+        phase: str = "prior",
+        trial_id: str | None = None,
+    ) -> TrialResult:
+        """Reconstruct a minimal TrialResult from a DB row (warm start)."""
+        return cls(
+            config=config,
+            metrics={},
+            score=score,
+            score_ci=score_ci,
+            phase=phase,
+            reasoning="warm-start from prior study",
+            trial_id=trial_id,
+        )
 
     def with_phase(self, phase: str, reasoning: str = "") -> TrialResult:
         """Return a copy tagged with a different phase/reasoning (immutable update)."""
@@ -149,6 +200,16 @@ class SyntheticTrialExecutor:
     def runs_used(self) -> int:
         return self._runs_used
 
+    def warm_load(self, trials: list[TrialResult]) -> int:
+        """Pre-populate cache from prior study trials. Returns count loaded."""
+        loaded = 0
+        for trial in trials:
+            key = self._config_key(trial.config)
+            if key not in self._cache:
+                self._cache[key] = trial
+                loaded += 1
+        return loaded
+
     def set_cache_enabled(self, enabled: bool) -> None:
         """
         Toggle config-level caching.
@@ -176,7 +237,9 @@ class SyntheticTrialExecutor:
 
         if self.noise_std > 0:
             # Per-config seeded noise: same config → same noisy result always
-            config_hash = int(hashlib.sha1(key.encode()).hexdigest(), 16) % (2**32)
+            config_hash = int(hashlib.blake2b(key.encode(), digest_size=8).hexdigest(), 16) % (
+                2**32
+            )
             rng = np.random.default_rng(self.seed ^ config_hash)
             noise = float(rng.normal(0.0, self.noise_std))
             if "wer" in raw:
@@ -206,4 +269,4 @@ class SyntheticTrialExecutor:
 
     @staticmethod
     def _config_key(config: Mapping[str, Any]) -> str:
-        return str(hash(tuple(sorted(config.items()))))
+        return _deterministic_key(canonical_config_repr(config))

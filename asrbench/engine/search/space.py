@@ -63,9 +63,9 @@ class ParamSpec:
         if not self.name or not isinstance(self.name, str):
             raise ValueError(f"ParamSpec.name must be a non-empty string, got: {self.name!r}")
         if self.type == "float":
-            self._validate_numeric(kind=float)
+            self._validate_numeric(kind="float")
         elif self.type == "int":
-            self._validate_numeric(kind=int)
+            self._validate_numeric(kind="int")
         elif self.type == "bool":
             if not isinstance(self.default, bool):
                 raise ValueError(
@@ -88,7 +88,7 @@ class ParamSpec:
                 "Expected one of: float, int, bool, enum."
             )
 
-    def _validate_numeric(self, kind: type) -> None:
+    def _validate_numeric(self, kind: Literal["int", "float"]) -> None:
         if self.min is None or self.max is None:
             raise ValueError(f"Param '{self.name}' ({self.type}): 'min' and 'max' are required")
         if not isinstance(self.min, (int, float)) or not isinstance(self.max, (int, float)):
@@ -96,7 +96,7 @@ class ParamSpec:
                 f"Param '{self.name}' ({self.type}): min/max must be numeric, "
                 f"got min={self.min!r}, max={self.max!r}"
             )
-        if kind is int:
+        if kind == "int":
             if not (isinstance(self.min, int) and isinstance(self.max, int)):
                 raise ValueError(
                     f"Param '{self.name}' (int): min and max must be integers, "
@@ -144,26 +144,26 @@ class ParamSpec:
             step = int(self.step) if self.step is not None else 1
             if step < 1:
                 step = 1
-            values = list(range(int(self.min), int(self.max) + 1, step))
-            if len(values) > max_points:
+            int_values: list[int] = list(range(int(self.min), int(self.max) + 1, step))
+            if len(int_values) > max_points:
                 # Sample evenly (keep endpoints + default)
-                stride = max(1, len(values) // max_points)
-                sampled = values[::stride]
-                if values[-1] not in sampled:
-                    sampled.append(values[-1])
+                stride = max(1, len(int_values) // max_points)
+                sampled = int_values[::stride]
+                if int_values[-1] not in sampled:
+                    sampled.append(int_values[-1])
                 return sampled
-            return values
+            return int_values
         # float
         if self.step is not None:
-            values: list[float] = []
+            float_values: list[float] = []
             v = float(self.min)
             while v <= float(self.max) + 1e-12:
-                values.append(round(v, 10))
+                float_values.append(round(v, 10))
                 v += float(self.step)
-            if len(values) > max_points:
-                stride = max(1, len(values) // max_points)
-                return values[::stride]
-            return values
+            if len(float_values) > max_points:
+                stride = max(1, len(float_values) // max_points)
+                return float_values[::stride]
+            return float_values
         # Continuous float without step: just return 3-point probe set.
         return [float(self.min), float(self.default), float(self.max)]
 

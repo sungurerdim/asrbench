@@ -116,6 +116,7 @@ class IAMSOptimizer:
         multistart_candidates: int = 3,
         validation_runs: int = 3,
         enable_deep_ablation: bool = False,
+        prior_screening: ScreeningResult | None = None,
     ) -> None:
         if mode not in ("fast", "balanced", "maximum"):
             raise ValueError(
@@ -126,11 +127,12 @@ class IAMSOptimizer:
         self.objective = objective
         self.budget = budget
         self.eps_min = eps_min
-        self.mode = mode
+        self.mode: AccuracyMode = mode
         self.top_k_pairs = top_k_pairs
         self.multistart_candidates = multistart_candidates
         self.validation_runs = validation_runs
         self.enable_deep_ablation = enable_deep_ablation
+        self.prior_screening = prior_screening
 
     # ------------------------------------------------------------------
     # Orchestration
@@ -143,14 +145,22 @@ class IAMSOptimizer:
         best = None  # type: TrialResult | None
 
         # ---- Layer 1: Screening ----
-        screening = ScreeningPhase(
-            self.executor, self.space, self.budget, eps_min=self.eps_min
-        ).run()
-        reasoning.append(
-            f"Layer 1 (screening): {len(screening.sensitive_order)} sensitive "
-            f"parameters in {len(screening.trials)} trials "
-            f"(insensitive: {screening.insensitive})"
-        )
+        if self.prior_screening is not None:
+            screening = self.prior_screening
+            reasoning.append(
+                f"Layer 1 (screening): WARM START — reusing prior screening "
+                f"({len(screening.sensitive_order)} sensitive, "
+                f"insensitive: {screening.insensitive})"
+            )
+        else:
+            screening = ScreeningPhase(
+                self.executor, self.space, self.budget, eps_min=self.eps_min
+            ).run()
+            reasoning.append(
+                f"Layer 1 (screening): {len(screening.sensitive_order)} sensitive "
+                f"parameters in {len(screening.trials)} trials "
+                f"(insensitive: {screening.insensitive})"
+            )
         trial_batches.append(screening.trials)
         best = screening.baseline
 
@@ -220,7 +230,11 @@ class IAMSOptimizer:
         )
 
         # ---- Layer 4: Multi-start ----
-        promising_sorted = sorted(promising, key=lambda t: t.score)[: self.multistart_candidates]
+        effective_candidates = self.multistart_candidates
+        if not promising:
+            effective_candidates = 1
+            reasoning.append("Layer 3 found no interactions — reducing multi-start to 1 candidate")
+        promising_sorted = sorted(promising, key=lambda t: t.score)[:effective_candidates]
         start_trials = [layer2.final_trial] + promising_sorted
         multi = MultiStartSequentialDescent(
             self.executor, self.space, self.budget, eps_min=self.eps_min
