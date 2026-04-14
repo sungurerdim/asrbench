@@ -19,6 +19,13 @@ env/
 *.db-wal
 *.db-shm
 
+# Local environment config written by setup_env.py (machine-specific)
+.asrbench-env
+pyright_output.json
+
+# Claude Code session state — never commit
+.claude/
+
 # Audio / model artifacts
 *.npy
 *.pt
