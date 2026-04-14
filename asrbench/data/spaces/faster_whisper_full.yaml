@@ -1,0 +1,135 @@
+# IAMS parameter space for faster-whisper backend.
+#
+# 17 parameters (10 backend + 7 preprocessing).
+# L1 screening budget: 1 + 2×17 = 35 trials (baseline + min/max per param).
+#
+# Design rules:
+#   - min/max define the IAMS sweep range for L1 OFAT-3 screening.
+#   - step controls L2 strategy: (max-min)/step ≤ 6 → exhaustive, else pattern search.
+#   - default is the L1 baseline — a production-proven "good" value.
+#   - Bool/enum are always exhaustive in L2.
+
+parameters:
+  # ── Backend (transcribe kwargs) ──────────────────────────────────────
+
+  beam_size:
+    type: int
+    min: 1
+    default: 5
+    max: 10
+    # 10 values → L2 pattern search; 1=greedy, 10=conservative
+
+  temperature:
+    type: float
+    min: 0.0
+    default: 0.0
+    max: 0.8
+    step: 0.1
+    # 9 values → L2 exhaustive; >0.8 produces garbage output
+
+  patience:
+    type: float
+    min: 0.5
+    default: 1.0
+    max: 2.0
+    step: 0.25
+    # 7 values → L2 exhaustive; <0.5 too aggressive, >2.0 diminishing returns
+
+  repetition_penalty:
+    type: float
+    min: 1.0
+    default: 1.0
+    max: 1.5
+    step: 0.1
+    # 6 values → L2 exhaustive; 1.0=disabled, >1.5 distorts output
+
+  no_repeat_ngram_size:
+    type: int
+    min: 0
+    default: 0
+    max: 5
+    # 6 values → L2 exhaustive; 0=disabled
+
+  compression_ratio_threshold:
+    type: float
+    min: 1.5
+    default: 2.4
+    max: 3.5
+    step: 0.5
+    # 5 values → L2 exhaustive; failure detection threshold
+
+  log_prob_threshold:
+    type: float
+    min: -2.0
+    default: -1.0
+    max: -0.1
+    step: 0.1
+    # 20 values → L2 pattern search; more negative = more tolerant
+
+  no_speech_threshold:
+    type: float
+    min: 0.1
+    default: 0.6
+    max: 0.9
+    step: 0.1
+    # 9 values → L2 exhaustive; silence detection sensitivity
+
+  condition_on_previous_text:
+    type: bool
+    default: true
+    # L2 exhaustive (2 values); hallucination risk vs. context continuity
+
+  vad_filter:
+    type: bool
+    default: false
+    # L2 exhaustive (2 values); Silero VAD pre-filter
+
+  # ── Preprocessing (preprocess.* prefix) ──────────────────────────────
+
+  preprocess.format:
+    type: enum
+    values: [none, opus_64k, opus_32k, opus_24k]
+    default: none
+    # L2 exhaustive (4 values); codec artifact simulation (opus lossy roundtrip)
+
+  preprocess.sample_rate:
+    type: enum
+    values: [8000, 16000, 22050]
+    default: 16000
+    # L2 exhaustive (3 values); 8k=telephony, 16k=native whisper, 22k=reference
+
+  preprocess.lufs_target:
+    type: float
+    min: -24.0
+    default: -16.0
+    max: -10.0
+    step: 2.0
+    # 8 values → L2 exhaustive; -16=broadcast standard, LUFS ~2dB perceptual res
+
+  preprocess.highpass_hz:
+    type: int
+    min: 0
+    default: 80
+    max: 300
+    # 301 values → L2 pattern search; 0=off, male F0~85Hz, 300=boundary
+
+  preprocess.drc_ratio:
+    type: float
+    min: 1.0
+    default: 1.0
+    max: 4.0
+    step: 0.5
+    # 7 values → L2 exhaustive; 1.0=off, >4.0 over-compresses
+
+  preprocess.noise_reduce:
+    type: float
+    min: 0.0
+    default: 0.0
+    max: 0.8
+    step: 0.1
+    # 9 values → L2 exhaustive; >0.8 causes speech artifacts
+
+  preprocess.vad_trim:
+    type: bool
+    default: false
+    # L2 exhaustive (2 values); silence removal before transcription
