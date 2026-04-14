@@ -1,0 +1,181 @@
+{
+  "_comment": [
+    "ASRbench IAMS optimizer matrisi.",
+    "Kullanim: bench.bat optimize_matrix.json",
+    "         bench.bat optimize_matrix.json --csv results.csv",
+    "         bench.bat optimize_matrix.json --dry-run",
+    "",
+    "Her study icin IAMS L1-L7 calisir (~60-140 trial/study).",
+    "Studies sirayla calisir (GPU kisiti nedeniyle paralel desteklenmiyor).",
+    "",
+    "Toplam: 2 model x 12 study = 24 study",
+    "  6 study = sequential (batch_size yok)",
+    "  6 study = batched (batch_size: 5)",
+    "",
+    "max_duration_s: 3600 = her dataset'ten max 1 saatlik ses kullan.",
+    "",
+    "prior_study: Bir onceki tamamlanan study UUID'si ile warm-start yapilir.",
+    "  Ornek: clean-tr-seq bittikten sonra noisy-tr-seq icin screening tekrar yapilmaz.",
+    "  Bos birak veya sil → tam yeniden baslatir.",
+    "",
+    "batch_size: Belirtilmezse sequential (WhisperModel.transcribe).",
+    "  5 → BatchedInferencePipeline.transcribe(batch_size=5).",
+    "  IAMS bu degeri sabit tutar (optimize etmez).",
+    "",
+    "local_path: Lokalde indirildiyse tam snapshot yolunu girin.",
+    "  Ornek: D:\\models\\huggingface\\hub\\models--Systran--faster-whisper-large-v3\\snapshots\\<hash>"
+  ],
+
+  "server": {
+    "base_url": "http://127.0.0.1:8765"
+  },
+
+  "models": [
+    {
+      "name": "large-v3",
+      "backend": "faster-whisper",
+      "family": "whisper",
+      "local_path": "D:\\models\\huggingface\\hub\\models--Systran--faster-whisper-large-v3\\snapshots\\edaa852ec7e145841d8ffdb056a99866b5f0a478"
+    },
+    {
+      "name": "large-v3-turbo",
+      "backend": "faster-whisper",
+      "family": "whisper",
+      "local_path": "D:\\models\\huggingface\\hub\\models--deepdml--faster-whisper-large-v3-turbo-ct2\\snapshots\\4df90f75321148c3a29a9e2351b7ddf8f5b115a8"
+    }
+  ],
+
+  "optimizer": {
+    "mode": "maximum",
+    "budget": 200,
+    "epsilon": 0.005,
+    "convergence_window": 3,
+    "top_k_pairs": 5,
+    "multistart_candidates": 3,
+    "validation_runs": 5,
+    "deep_ablation": true,
+    "objective": "wer"
+  },
+
+  "studies": [
+
+    {
+      "_group": "SEQUENTIAL — WhisperModel.transcribe (batch_size yok)",
+      "label": "clean-tr-fleurs-seq",
+      "lang": "tr",
+      "dataset": "fleurs",
+      "split": "test",
+      "max_duration_s": 3600,
+      "space_file": "spaces/space_clean.yaml",
+      "prior_study": null
+    },
+    {
+      "label": "noisy-tr-fleurs-seq",
+      "lang": "tr",
+      "dataset": "fleurs",
+      "split": "test",
+      "max_duration_s": 3600,
+      "space_file": "spaces/space_noisy.yaml",
+      "prior_study": null
+    },
+    {
+      "label": "clean-en-fleurs-seq",
+      "lang": "en",
+      "dataset": "fleurs",
+      "split": "test",
+      "max_duration_s": 3600,
+      "space_file": "spaces/space_clean.yaml",
+      "prior_study": null
+    },
+    {
+      "label": "noisy-en-fleurs-seq",
+      "lang": "en",
+      "dataset": "fleurs",
+      "split": "test",
+      "max_duration_s": 3600,
+      "space_file": "spaces/space_noisy.yaml",
+      "prior_study": null
+    },
+    {
+      "label": "clean-en-librispeech-seq",
+      "lang": "en",
+      "dataset": "librispeech",
+      "split": "test",
+      "max_duration_s": 3600,
+      "space_file": "spaces/space_clean.yaml",
+      "prior_study": null
+    },
+    {
+      "label": "noisy-en-librispeech-seq",
+      "lang": "en",
+      "dataset": "librispeech",
+      "split": "test",
+      "max_duration_s": 3600,
+      "space_file": "spaces/space_noisy.yaml",
+      "prior_study": null
+    },
+
+    {
+      "_group": "BATCHED — BatchedInferencePipeline.transcribe(batch_size=5)",
+      "label": "clean-tr-fleurs-batch5",
+      "lang": "tr",
+      "dataset": "fleurs",
+      "split": "test",
+      "max_duration_s": 3600,
+      "batch_size": 5,
+      "space_file": "spaces/space_clean.yaml",
+      "prior_study": null
+    },
+    {
+      "label": "noisy-tr-fleurs-batch5",
+      "lang": "tr",
+      "dataset": "fleurs",
+      "split": "test",
+      "max_duration_s": 3600,
+      "batch_size": 5,
+      "space_file": "spaces/space_noisy.yaml",
+      "prior_study": null
+    },
+    {
+      "label": "clean-en-fleurs-batch5",
+      "lang": "en",
+      "dataset": "fleurs",
+      "split": "test",
+      "max_duration_s": 3600,
+      "batch_size": 5,
+      "space_file": "spaces/space_clean.yaml",
+      "prior_study": null
+    },
+    {
+      "label": "noisy-en-fleurs-batch5",
+      "lang": "en",
+      "dataset": "fleurs",
+      "split": "test",
+      "max_duration_s": 3600,
+      "batch_size": 5,
+      "space_file": "spaces/space_noisy.yaml",
+      "prior_study": null
+    },
+    {
+      "label": "clean-en-librispeech-batch5",
+      "lang": "en",
+      "dataset": "librispeech",
+      "split": "test",
+      "max_duration_s": 3600,
+      "batch_size": 5,
+      "space_file": "spaces/space_clean.yaml",
+      "prior_study": null
+    },
+    {
+      "label": "noisy-en-librispeech-batch5",
+      "lang": "en",
+      "dataset": "librispeech",
+      "split": "test",
+      "max_duration_s": 3600,
+      "batch_size": 5,
+      "space_file": "spaces/space_noisy.yaml",
+      "prior_study": null
+    }
+
+  ]
+}

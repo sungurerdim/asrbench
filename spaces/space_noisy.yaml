@@ -1,0 +1,242 @@
+# IAMS parameter space — NOISY audio koşulu
+#
+# Kullanım senaryosu:
+#   Gürültülü / bant sınırlı / gerçek dünya sesi için en iyi
+#   backend + preprocessing kombinasyonunu bul.
+#   IAMS hangi preproc adımlarının gerçekten WER'i iyileştirdiğini otomatik tespit eder.
+#
+# Sentinel değerler (backend bu değerleri None'a çevirir = devre dışı):
+#   hallucination_silence_threshold = 0.0 → None
+#   max_new_tokens                  = 0   → None
+#   chunk_length                    = 0   → None
+#
+# NOT: preprocess.format (codec sim) bu space'te YOKTUR — degradasyon simülasyonu,
+#   restorasyon değil. Robustness testi için faster_whisper_full.yaml kullan.
+#
+# L1 screening budget: 1 + 2×30 = 61 trial
+# Tahmini toplam (maximum mod): 145-245 trial
+
+parameters:
+  # ── Beam / decoding ────────────────────────────────────────────────────────
+
+  beam_size:
+    type: int
+    min: 1
+    default: 5
+    max: 10
+
+  best_of:
+    type: int
+    min: 1
+    default: 5
+    max: 5
+
+  patience:
+    type: float
+    min: 0.5
+    default: 1.0
+    max: 2.0
+    step: 0.25
+
+  length_penalty:
+    type: float
+    min: 0.5
+    default: 1.0
+    max: 2.0
+    step: 0.25
+
+  temperature:
+    type: float
+    min: 0.0
+    default: 0.0
+    max: 0.8
+    step: 0.1
+
+  # ── Tekrar / çıktı kısıtları ───────────────────────────────────────────────
+
+  repetition_penalty:
+    type: float
+    min: 1.0
+    default: 1.0
+    max: 1.5
+    step: 0.1
+
+  no_repeat_ngram_size:
+    type: int
+    min: 0
+    default: 0
+    max: 5
+
+  suppress_blank:
+    type: bool
+    default: true
+
+  without_timestamps:
+    type: bool
+    default: false
+
+  max_initial_timestamp:
+    type: float
+    min: 0.5
+    default: 1.0
+    max: 2.0
+    step: 0.25
+
+  max_new_tokens:
+    type: int
+    min: 0
+    default: 0
+    max: 448
+    # 0=sınırsız (sentinel→None)
+
+  # ── Güvenilirlik eşikleri ─────────────────────────────────────────────────
+
+  compression_ratio_threshold:
+    type: float
+    min: 1.5
+    default: 2.4
+    max: 3.5
+    step: 0.5
+
+  log_prob_threshold:
+    type: float
+    min: -2.0
+    default: -1.0
+    max: -0.5
+    step: 0.1
+
+  no_speech_threshold:
+    type: float
+    min: 0.1
+    default: 0.6
+    max: 0.9
+    step: 0.1
+
+  hallucination_silence_threshold:
+    type: float
+    min: 0.0
+    default: 0.0
+    max: 5.0
+    step: 0.5
+    # 0.0=devre dışı (sentinel→None)
+    # Gürültülü seste etkin olabilir; IAMS test eder
+
+  # ── Bağlam / chunking ─────────────────────────────────────────────────────
+
+  condition_on_previous_text:
+    type: bool
+    default: true
+    # Gürültülü ses + bağlam = halüsinasyon riski; IAMS bunu test eder
+
+  prompt_reset_on_temperature:
+    type: float
+    min: 0.0
+    default: 0.5
+    max: 1.0
+    step: 0.1
+
+  chunk_length:
+    type: int
+    min: 0
+    default: 0
+    max: 30
+    # 0=model default (sentinel→None)
+
+  # ── VAD — Silero filtre ────────────────────────────────────────────────────
+
+  vad_filter:
+    type: bool
+    default: false
+    # Gürültülü seste genellikle WER'i iyileştirir; L2 exhaustive
+
+  # VAD sub-params — vad_filter=True olduğunda vad_parameters={...} olarak gönderilir
+
+  vad_threshold:
+    type: float
+    min: 0.1
+    default: 0.5
+    max: 0.9
+    step: 0.1
+    # Konuşma olasılığı eşiği; düşük=daha fazla konuşma, yüksek=agresif filtreleme
+    # L2 exhaustive (9 değer)
+
+  vad_min_speech_duration_ms:
+    type: int
+    min: 50
+    default: 250
+    max: 500
+    # Tutulacak min konuşma süresi (ms); kısa gürültü patlakları atılır
+    # L2 pattern search
+
+  vad_max_speech_duration_s:
+    type: float
+    min: 5.0
+    default: 30.0
+    max: 30.0
+    step: 5.0
+    # Segment başına max süre; aşılınca sessizlikte böler; L2 exhaustive (6 değer)
+
+  vad_min_silence_duration_ms:
+    type: int
+    min: 100
+    default: 2000
+    max: 3000
+    # Segment bölmek için gereken min sessizlik; L2 pattern search
+    # Kısa değer → daha granüler segmentler → daha fazla bağlam yenileme
+
+  vad_speech_pad_ms:
+    type: int
+    min: 0
+    default: 400
+    max: 600
+    # Konuşma öncesi/sonrası dolgu; L2 pattern search
+    # Çok az → sözcük kırpma, çok fazla → gürültü girişi
+
+  # ── Preprocessing — restorasyon ───────────────────────────────────────────
+
+  preprocess.noise_reduce:
+    type: float
+    min: 0.0
+    default: 0.0
+    max: 0.8
+    step: 0.1
+    # Spektral gating; 0.0=devre dışı, >0.8 konuşma bozulması; L2 exhaustive (9 değer)
+
+  preprocess.lufs_target:
+    type: float
+    min: -24.0
+    default: -16.0
+    max: -10.0
+    step: 2.0
+    # EBU R128 ses seviyesi normalizasyonu; L2 exhaustive (8 değer)
+    # -23=broadcast, -16=streaming standard, -14=podcast
+    # Not: None (kapalı) temsil edilemiyor; min/max uçları kapalı etkisine yakın
+
+  preprocess.highpass_hz:
+    type: int
+    min: 0
+    default: 0
+    max: 300
+    # Butterworth highpass; 0=devre dışı; erkek F0~85Hz, 300=üst sınır
+    # L2 pattern search (çok fazla değer)
+
+  preprocess.drc_ratio:
+    type: float
+    min: 1.0
+    default: 1.0
+    max: 4.0
+    step: 0.5
+    # Dinamik aralık sıkıştırma; 1.0=devre dışı; L2 exhaustive (7 değer)
+
+  preprocess.vad_trim:
+    type: bool
+    default: false
+    # Enerji tabanlı sessizlik kırpma (Silero vad_filter'dan bağımsız)
+    # Segment başı/sonu sessizliklerini temizler; L2 exhaustive
+
+  preprocess.sample_rate:
+    type: enum
+    values: [8000, 16000, 22050]
+    default: 16000
+    # 8000=telefon bandı simülasyonu, 16000=native (identity), 22050=referans
+    # L2 exhaustive (3 değer); IAMS genellikle 16000'i optimal bulur

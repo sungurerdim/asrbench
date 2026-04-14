@@ -1,0 +1,330 @@
+{
+  "_comment": [
+    "ASRbench kapsamlı test matrisi.",
+    "Kullanım: bench.bat matrix.json --csv results.csv",
+    "Dry-run:  bench.bat matrix.json --dry-run",
+    "",
+    "Toplam run sayisi: 28",
+    "Tahmini sure (60m audio/run, large-v3 GPU): ~4-6 saat",
+    "",
+    "local_path: lokalde indirildiyse tam snapshot yolunu girin,",
+    "yoksa 'large-v3' birakın (otomatik indirir).",
+    "Ornek yol: D:\\models\\huggingface\\hub\\models--Systran--faster-whisper-large-v3\\snapshots\\<hash>"
+  ],
+
+  "server": {
+    "base_url": "http://127.0.0.1:8765"
+  },
+
+  "model": {
+    "name": "large-v3",
+    "backend": "faster-whisper",
+    "family": "whisper",
+    "local_path": "D:\\models\\huggingface\\hub\\models--Systran--faster-whisper-large-v3\\snapshots\\edaa852ec7e145841d8ffdb056a99866b5f0a478"
+  },
+
+  "runs": [
+
+    {
+      "_group": "1. BASELINE — temiz ses, varsayilan parametreler",
+      "label": "baseline-tr-fleurs",
+      "lang": "tr",
+      "dataset": "fleurs",
+      "split": "test",
+      "max_duration_s": 3600,
+      "params": {}
+    },
+    {
+      "label": "baseline-en-fleurs",
+      "lang": "en",
+      "dataset": "fleurs",
+      "split": "test",
+      "max_duration_s": 3600,
+      "params": {}
+    },
+    {
+      "label": "baseline-en-librispeech",
+      "lang": "en",
+      "dataset": "librispeech",
+      "split": "test",
+      "max_duration_s": 3600,
+      "params": {}
+    },
+
+    {
+      "_group": "2. VAD ONLY — sadece sessizlik kesme, preproc yok",
+      "label": "vad-tr-fleurs",
+      "lang": "tr",
+      "dataset": "fleurs",
+      "split": "test",
+      "max_duration_s": 3600,
+      "params": {
+        "vad_filter": true
+      }
+    },
+    {
+      "label": "vad-en-fleurs",
+      "lang": "en",
+      "dataset": "fleurs",
+      "split": "test",
+      "max_duration_s": 3600,
+      "params": {
+        "vad_filter": true
+      }
+    },
+
+    {
+      "_group": "3. NOISE REDUCE SWEEP — en iyi NR gücünü bul (TR odakli)",
+      "label": "nr03-tr-fleurs",
+      "lang": "tr",
+      "dataset": "fleurs",
+      "split": "test",
+      "max_duration_s": 3600,
+      "params": {
+        "preprocess.noise_reduce": 0.3
+      }
+    },
+    {
+      "label": "nr05-tr-fleurs",
+      "lang": "tr",
+      "dataset": "fleurs",
+      "split": "test",
+      "max_duration_s": 3600,
+      "params": {
+        "preprocess.noise_reduce": 0.5
+      }
+    },
+    {
+      "label": "nr07-tr-fleurs",
+      "lang": "tr",
+      "dataset": "fleurs",
+      "split": "test",
+      "max_duration_s": 3600,
+      "params": {
+        "preprocess.noise_reduce": 0.7
+      }
+    },
+    {
+      "label": "nr09-tr-fleurs",
+      "lang": "tr",
+      "dataset": "fleurs",
+      "split": "test",
+      "max_duration_s": 3600,
+      "params": {
+        "preprocess.noise_reduce": 0.9
+      }
+    },
+
+    {
+      "_group": "4. LUFS NORMALIZATION — ses seviyesi normalizasyonu",
+      "label": "lufs-23-tr-fleurs",
+      "lang": "tr",
+      "dataset": "fleurs",
+      "split": "test",
+      "max_duration_s": 3600,
+      "params": {
+        "preprocess.lufs_target": -23.0
+      }
+    },
+    {
+      "label": "lufs-16-tr-fleurs",
+      "lang": "tr",
+      "dataset": "fleurs",
+      "split": "test",
+      "max_duration_s": 3600,
+      "params": {
+        "preprocess.lufs_target": -16.0
+      }
+    },
+    {
+      "label": "lufs-14-tr-fleurs",
+      "lang": "tr",
+      "dataset": "fleurs",
+      "split": "test",
+      "max_duration_s": 3600,
+      "params": {
+        "preprocess.lufs_target": -14.0
+      }
+    },
+
+    {
+      "_group": "5. COMBINED DENOISING — NR + LUFS + VAD + highpass tam pipeline",
+      "label": "full-denoise-tr-fleurs",
+      "lang": "tr",
+      "dataset": "fleurs",
+      "split": "test",
+      "max_duration_s": 3600,
+      "params": {
+        "vad_filter": true,
+        "preprocess.noise_reduce": 0.5,
+        "preprocess.lufs_target": -16.0,
+        "preprocess.highpass_hz": 80
+      }
+    },
+    {
+      "label": "full-denoise-en-fleurs",
+      "lang": "en",
+      "dataset": "fleurs",
+      "split": "test",
+      "max_duration_s": 3600,
+      "params": {
+        "vad_filter": true,
+        "preprocess.noise_reduce": 0.5,
+        "preprocess.lufs_target": -16.0,
+        "preprocess.highpass_hz": 80
+      }
+    },
+    {
+      "label": "full-denoise-en-librispeech",
+      "lang": "en",
+      "dataset": "librispeech",
+      "split": "test",
+      "max_duration_s": 3600,
+      "params": {
+        "vad_filter": true,
+        "preprocess.noise_reduce": 0.5,
+        "preprocess.lufs_target": -16.0,
+        "preprocess.highpass_hz": 80
+      }
+    },
+
+    {
+      "_group": "6. CODEC SIMULATION — düşük kalite/telefon ses robustluk testi",
+      "label": "codec-opus64k-tr-fleurs",
+      "lang": "tr",
+      "dataset": "fleurs",
+      "split": "test",
+      "max_duration_s": 3600,
+      "params": {
+        "preprocess.format": "opus_64k"
+      }
+    },
+    {
+      "label": "codec-opus32k-tr-fleurs",
+      "lang": "tr",
+      "dataset": "fleurs",
+      "split": "test",
+      "max_duration_s": 3600,
+      "params": {
+        "preprocess.format": "opus_32k"
+      }
+    },
+    {
+      "label": "codec-opus24k-tr-fleurs",
+      "lang": "tr",
+      "dataset": "fleurs",
+      "split": "test",
+      "max_duration_s": 3600,
+      "params": {
+        "preprocess.format": "opus_24k"
+      }
+    },
+    {
+      "label": "codec-opus32k-nr-tr-fleurs",
+      "lang": "tr",
+      "dataset": "fleurs",
+      "split": "test",
+      "max_duration_s": 3600,
+      "params": {
+        "preprocess.format": "opus_32k",
+        "preprocess.noise_reduce": 0.5,
+        "vad_filter": true
+      }
+    },
+
+    {
+      "_group": "7. BEAM SIZE SWEEP — hiz vs dogruluk dengesi",
+      "label": "beam1-tr-fleurs",
+      "lang": "tr",
+      "dataset": "fleurs",
+      "split": "test",
+      "max_duration_s": 3600,
+      "params": {
+        "beam_size": 1
+      }
+    },
+    {
+      "label": "beam3-tr-fleurs",
+      "lang": "tr",
+      "dataset": "fleurs",
+      "split": "test",
+      "max_duration_s": 3600,
+      "params": {
+        "beam_size": 3
+      }
+    },
+    {
+      "label": "beam5-tr-fleurs",
+      "lang": "tr",
+      "dataset": "fleurs",
+      "split": "test",
+      "max_duration_s": 3600,
+      "params": {
+        "beam_size": 5
+      }
+    },
+
+    {
+      "_group": "8. BACKEND PARAM SWEEP — model davranisi alternatifleri",
+      "label": "temp02-tr-fleurs",
+      "lang": "tr",
+      "dataset": "fleurs",
+      "split": "test",
+      "max_duration_s": 3600,
+      "params": {
+        "temperature": 0.2
+      }
+    },
+    {
+      "label": "no-condition-prev-tr-fleurs",
+      "lang": "tr",
+      "dataset": "fleurs",
+      "split": "test",
+      "max_duration_s": 3600,
+      "params": {
+        "condition_on_previous_text": false
+      }
+    },
+    {
+      "label": "nst04-tr-fleurs",
+      "lang": "tr",
+      "dataset": "fleurs",
+      "split": "test",
+      "max_duration_s": 3600,
+      "params": {
+        "no_speech_threshold": 0.4
+      }
+    },
+
+    {
+      "_group": "9. BEST GUESS — sweep sonuclarina gore hipotez kombinasyonu (manuel guncelle)",
+      "label": "best-tr-fleurs",
+      "lang": "tr",
+      "dataset": "fleurs",
+      "split": "test",
+      "max_duration_s": 3600,
+      "params": {
+        "beam_size": 5,
+        "vad_filter": true,
+        "preprocess.noise_reduce": 0.5,
+        "preprocess.lufs_target": -16.0,
+        "preprocess.highpass_hz": 80
+      }
+    },
+    {
+      "label": "best-en-librispeech",
+      "lang": "en",
+      "dataset": "librispeech",
+      "split": "test",
+      "max_duration_s": 3600,
+      "params": {
+        "beam_size": 5,
+        "vad_filter": true,
+        "preprocess.noise_reduce": 0.5,
+        "preprocess.lufs_target": -16.0,
+        "preprocess.highpass_hz": 80
+      }
+    }
+
+  ]
+}

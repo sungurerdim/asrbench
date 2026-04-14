@@ -1,0 +1,169 @@
+# IAMS parameter space — CLEAN audio koşulu
+#
+# Kullanım senaryosu:
+#   Temiz ses için en iyi backend parametrelerini bul.
+#   Preprocessing devre dışı — temiz sese NR/LUFS/DRC uygulamak WER'i bozar.
+#
+# Sentinel değerler (backend bu değerleri None'a çevirir = devre dışı):
+#   hallucination_silence_threshold = 0.0 → None (devre dışı)
+#   max_new_tokens                  = 0   → None (sınırsız)
+#   chunk_length                    = 0   → None (model default)
+#
+# L1 screening budget: 1 + 2×19 = 39 trial
+# Tahmini toplam (maximum mod): 75-145 trial
+
+parameters:
+  # ── Beam / decoding ────────────────────────────────────────────────────────
+
+  beam_size:
+    type: int
+    min: 1
+    default: 5
+    max: 10
+    # 1=greedy, 10=konservatif; L2 pattern search
+
+  best_of:
+    type: int
+    min: 1
+    default: 5
+    max: 5
+    # temperature>0 olduğunda sampling candidate sayısı
+    # temperature=0 iken görmezden gelinir; exhaustive (5 değer)
+
+  patience:
+    type: float
+    min: 0.5
+    default: 1.0
+    max: 2.0
+    step: 0.25
+    # Beam search erken durma toleransı; L2 exhaustive (7 değer)
+
+  length_penalty:
+    type: float
+    min: 0.5
+    default: 1.0
+    max: 2.0
+    step: 0.25
+    # Çıktı uzunluğu normalizasyonu; <1=kısa çıktı tercih, >1=uzun tercih
+    # L2 exhaustive (7 değer)
+
+  temperature:
+    type: float
+    min: 0.0
+    default: 0.0
+    max: 0.8
+    step: 0.1
+    # 0.0=deterministik; >0.2 genellikle WER kötüleştirir; L2 exhaustive
+
+  # ── Tekrar / çıktı kısıtları ───────────────────────────────────────────────
+
+  repetition_penalty:
+    type: float
+    min: 1.0
+    default: 1.0
+    max: 1.5
+    step: 0.1
+    # 1.0=devre dışı, >1.5 çıktıyı bozar; L2 exhaustive (6 değer)
+
+  no_repeat_ngram_size:
+    type: int
+    min: 0
+    default: 0
+    max: 5
+    # 0=devre dışı; L2 exhaustive (6 değer)
+
+  suppress_blank:
+    type: bool
+    default: true
+    # Segment başında boş token bastırma; L2 exhaustive
+
+  without_timestamps:
+    type: bool
+    default: false
+    # Zaman damgası tokenleri devre dışı; bazı dillerde WER iyileştirir; L2 exhaustive
+
+  max_initial_timestamp:
+    type: float
+    min: 0.5
+    default: 1.0
+    max: 2.0
+    step: 0.25
+    # İlk token için maks timestamp; L2 exhaustive (7 değer)
+
+  max_new_tokens:
+    type: int
+    min: 0
+    default: 0
+    max: 448
+    # 0=sınırsız (sentinel→None); whisper max ~448 token/chunk
+    # L2 pattern search; çok kısa değerler truncation oluşturur
+
+  # ── Güvenilirlik eşikleri ─────────────────────────────────────────────────
+
+  compression_ratio_threshold:
+    type: float
+    min: 1.5
+    default: 2.4
+    max: 3.5
+    step: 0.5
+    # Halüsinasyon tespiti; threshold aşılınca segment iptal; L2 exhaustive (5 değer)
+
+  log_prob_threshold:
+    type: float
+    min: -2.0
+    default: -1.0
+    max: -0.5
+    step: 0.1
+    # Ortalama log-olasılık eşiği; L2 pattern search
+
+  no_speech_threshold:
+    type: float
+    min: 0.1
+    default: 0.6
+    max: 0.9
+    step: 0.1
+    # Sessizlik segment iptal eşiği; L2 exhaustive (9 değer)
+
+  hallucination_silence_threshold:
+    type: float
+    min: 0.0
+    default: 0.0
+    max: 5.0
+    step: 0.5
+    # 0.0=devre dışı (sentinel→None); sessizlik üzerinde halüsinasyon tespiti
+    # L2 exhaustive (11 değer); gürültüsüz seste genellikle insensitive çıkar
+
+  # ── Bağlam / chunking ─────────────────────────────────────────────────────
+
+  condition_on_previous_text:
+    type: bool
+    default: true
+    # Önceki transkripti bağlam olarak kullan; halüsinasyon riski var; L2 exhaustive
+
+  prompt_reset_on_temperature:
+    type: float
+    min: 0.0
+    default: 0.5
+    max: 1.0
+    step: 0.1
+    # Fallback temperature bu eşiği geçince bağlamı sıfırla; L2 exhaustive (11 değer)
+
+  chunk_length:
+    type: int
+    min: 0
+    default: 0
+    max: 30
+    # 0=model default 30s (sentinel→None); daha kısa chunk = daha az bağlam
+    # L2 pattern search; çok kısa değerler context loss oluşturur
+
+  # ── VAD (Silero) ───────────────────────────────────────────────────────────
+
+  vad_filter:
+    type: bool
+    default: false
+    # Silero VAD ön filtresi; L2 exhaustive
+    # vad_filter=True → vad_* sub-params aktif olur
+
+  # Not: VAD sub-params (vad_threshold, vad_min_silence_duration_ms, vs.)
+  # space_noisy.yaml'da yer alır — clean space'te vad_filter genellikle
+  # insensitive çıkar ve sub-params gereksizdir.

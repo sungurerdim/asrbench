@@ -1,0 +1,97 @@
+{
+  "_comment": "ASRbench matrix config — kopyala, düzenle, çalıştır: python matrix_bench.py matrix.json",
+
+  "server": {
+    "base_url": "http://127.0.0.1:8765"
+  },
+
+  "model": {
+    "name": "large-v3",
+    "backend": "faster-whisper",
+    "family": "whisper",
+    "local_path": "large-v3"
+  },
+
+  "runs": [
+    {
+      "label": "clean-tr-fleurs-60m",
+      "lang": "tr",
+      "dataset": "fleurs",
+      "split": "test",
+      "max_duration_s": 3600,
+      "params": {}
+    },
+    {
+      "label": "noisy-tr-fleurs-60m-nr05",
+      "lang": "tr",
+      "dataset": "fleurs",
+      "split": "test",
+      "max_duration_s": 3600,
+      "params": {
+        "vad_filter": true,
+        "preprocess.noise_reduce": 0.5
+      }
+    },
+    {
+      "label": "noisy-tr-fleurs-60m-nr07-lufs",
+      "lang": "tr",
+      "dataset": "fleurs",
+      "split": "test",
+      "max_duration_s": 3600,
+      "params": {
+        "vad_filter": true,
+        "preprocess.noise_reduce": 0.7,
+        "preprocess.lufs_target": -16.0
+      }
+    },
+    {
+      "label": "clean-en-librispeech-60m",
+      "lang": "en",
+      "dataset": "librispeech",
+      "split": "test",
+      "max_duration_s": 3600,
+      "params": {}
+    },
+    {
+      "label": "noisy-en-librispeech-60m-nr05",
+      "lang": "en",
+      "dataset": "librispeech",
+      "split": "test",
+      "max_duration_s": 3600,
+      "params": {
+        "vad_filter": true,
+        "preprocess.noise_reduce": 0.5
+      }
+    },
+    {
+      "label": "beam1-tr-fleurs-60m",
+      "lang": "tr",
+      "dataset": "fleurs",
+      "split": "test",
+      "max_duration_s": 3600,
+      "params": {
+        "beam_size": 1
+      }
+    },
+    {
+      "label": "beam3-tr-fleurs-60m",
+      "lang": "tr",
+      "dataset": "fleurs",
+      "split": "test",
+      "max_duration_s": 3600,
+      "params": {
+        "beam_size": 3
+      }
+    },
+    {
+      "label": "codec-opus32k-tr-fleurs-60m",
+      "lang": "tr",
+      "dataset": "fleurs",
+      "split": "test",
+      "max_duration_s": 3600,
+      "params": {
+        "preprocess.format": "opus_32k"
+      }
+    }
+  ]
+}
