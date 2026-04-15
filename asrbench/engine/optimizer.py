@@ -25,12 +25,17 @@ Output:
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from asrbench.backends.base import BaseBackend
 
 from asrbench.engine.search.ablation import AblationResult, DeepAblation
 from asrbench.engine.search.budget import BudgetController
 from asrbench.engine.search.local_1d import search_1d
+from asrbench.engine.search.multifidelity import MultiFidelityTrialExecutor
 from asrbench.engine.search.multistart import (
     MultiStartResult,
     MultiStartSequentialDescent,
@@ -45,6 +50,8 @@ from asrbench.engine.search.screening import ScreeningPhase, ScreeningResult
 from asrbench.engine.search.space import ParameterSpace
 from asrbench.engine.search.trial import TrialExecutor, TrialResult
 from asrbench.engine.search.validation import ValidationPhase, ValidationResult
+
+logger = logging.getLogger(__name__)
 
 AccuracyMode = Literal["fast", "balanced", "maximum"]
 
@@ -117,12 +124,36 @@ class IAMSOptimizer:
         validation_runs: int = 3,
         enable_deep_ablation: bool = False,
         prior_screening: ScreeningResult | None = None,
+        backend: BaseBackend | None = None,
+        mode_hint: dict | None = None,
+        prior_sensitivity_hints: dict[str, float] | None = None,
+        use_multifidelity: bool = False,
+        multifidelity_rungs: tuple[float, ...] = (0.25, 0.5, 1.0),
+        multifidelity_prune_threshold: float = 0.015,
     ) -> None:
         if mode not in ("fast", "balanced", "maximum"):
             raise ValueError(
                 f"IAMSOptimizer: unknown mode {mode!r}. Use 'fast', 'balanced', or 'maximum'."
             )
         self.executor = executor
+        if backend is not None:
+            supported = backend.supported_params(mode_hint=mode_hint)
+            if supported is not None:
+                original = len(space.parameters)
+                filtered = space.restrict_to(supported)
+                dropped = original - len(filtered.parameters)
+                if dropped > 0:
+                    dropped_names = sorted(
+                        {p.name for p in space.parameters} - {p.name for p in filtered.parameters}
+                    )
+                    logger.info(
+                        "IAMSOptimizer: backend %s filtered %d params (mode_hint=%s): %s",
+                        getattr(backend, "name", backend.__class__.__name__),
+                        dropped,
+                        mode_hint,
+                        dropped_names,
+                    )
+                space = filtered
         self.space = space
         self.objective = objective
         self.budget = budget
@@ -133,10 +164,37 @@ class IAMSOptimizer:
         self.validation_runs = validation_runs
         self.enable_deep_ablation = enable_deep_ablation
         self.prior_screening = prior_screening
+        self.prior_sensitivity_hints = prior_sensitivity_hints or {}
+
+        # Multi-fidelity wrapper: used by Layer 2+ (not screening, not
+        # validation) so expensive trials can be pruned on a corpus fraction
+        # before committing to the full dataset. The executor only becomes
+        # active when the caller opts in and its inner executor implements
+        # ``evaluate_at_fraction`` — BenchmarkTrialExecutor and
+        # SyntheticTrialExecutor both do.
+        self._mf_executor: MultiFidelityTrialExecutor | None = None
+        if use_multifidelity and hasattr(executor, "evaluate_at_fraction"):
+            self._mf_executor = MultiFidelityTrialExecutor(
+                inner=executor,  # type: ignore[arg-type]
+                rungs=multifidelity_rungs,
+                prune_threshold=multifidelity_prune_threshold,
+            )
 
     # ------------------------------------------------------------------
     # Orchestration
     # ------------------------------------------------------------------
+
+    @property
+    def _search_executor(self) -> TrialExecutor:
+        """
+        Executor used by Layer 2-6. Returns the multi-fidelity wrapper when
+        enabled, else the base executor. Layer 1 (screening) and Layer 7
+        (validation) always use the base executor because they are
+        noise-sensitive and need full-fidelity measurements.
+        """
+        if self._mf_executor is not None:
+            return self._mf_executor  # type: ignore[return-value]
+        return self.executor
 
     def run(self) -> IAMSStudyResult:
         reasoning: list[str] = []
@@ -154,7 +212,11 @@ class IAMSOptimizer:
             )
         else:
             screening = ScreeningPhase(
-                self.executor, self.space, self.budget, eps_min=self.eps_min
+                self.executor,
+                self.space,
+                self.budget,
+                eps_min=self.eps_min,
+                prior_sensitivity_hints=self.prior_sensitivity_hints,
             ).run()
             reasoning.append(
                 f"Layer 1 (screening): {len(screening.sensitive_order)} sensitive "
@@ -177,10 +239,15 @@ class IAMSOptimizer:
                 insensitive_params=list(screening.insensitive),
             )
 
+        # Prime the multi-fidelity pruner with the screening baseline so
+        # Layer 2's first few probes have a meaningful threshold.
+        if self._mf_executor is not None:
+            self._mf_executor.set_incumbent(best.score)
+
         # ---- Layer 2: Hybrid sequential descent ----
         baseline_config = dict(screening.baseline.config)
         layer2 = sequential_descent(
-            self.executor,
+            self._search_executor,
             self.space,
             self.budget,
             start_config=baseline_config,
@@ -208,9 +275,13 @@ class IAMSOptimizer:
                 insensitive_params=list(screening.insensitive),
             )
 
+        # Refresh the pruner incumbent with the Layer 2 winner.
+        if self._mf_executor is not None:
+            self._mf_executor.set_incumbent(best.score)
+
         # ---- Layer 3: Pairwise 2D grid ----
         pairwise_scan = PairwiseGridScan(
-            self.executor,
+            self._search_executor,
             self.space,
             self.budget,
             top_k=self.top_k_pairs,
@@ -236,8 +307,10 @@ class IAMSOptimizer:
             reasoning.append("Layer 3 found no interactions — reducing multi-start to 1 candidate")
         promising_sorted = sorted(promising, key=lambda t: t.score)[:effective_candidates]
         start_trials = [layer2.final_trial] + promising_sorted
+        if self._mf_executor is not None:
+            self._mf_executor.set_incumbent(best.score)
         multi = MultiStartSequentialDescent(
-            self.executor, self.space, self.budget, eps_min=self.eps_min
+            self._search_executor, self.space, self.budget, eps_min=self.eps_min
         ).run(
             sensitive_order=screening.sensitive_order,
             start_trials=start_trials,
@@ -250,8 +323,10 @@ class IAMSOptimizer:
         )
 
         # ---- Layer 5: Deep ablation ----
+        if self._mf_executor is not None:
+            self._mf_executor.set_incumbent(best.score)
         ablation = DeepAblation(
-            self.executor,
+            self._search_executor,
             self.space,
             self.budget,
             eps_min=self.eps_min,
@@ -282,6 +357,8 @@ class IAMSOptimizer:
             )
 
         # ---- Layer 6: High-res refinement ----
+        if self._mf_executor is not None:
+            self._mf_executor.set_incumbent(best.score)
         refine_eps = self.eps_min / 2.0
         refine_baseline = dict(best.config)
         refine_best = best
@@ -290,7 +367,7 @@ class IAMSOptimizer:
                 break
             spec = self.space.get(name)
             local = search_1d(
-                self.executor,
+                self._search_executor,
                 baseline_config=refine_baseline,
                 param=spec,
                 budget=self.budget,

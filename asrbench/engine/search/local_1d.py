@@ -41,6 +41,8 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
+import numpy as np
+
 from asrbench.engine.search.budget import BudgetController
 from asrbench.engine.search.significance import is_improvement
 from asrbench.engine.search.space import ParamSpec
@@ -93,6 +95,99 @@ def _evaluate_override(
     trial = executor.evaluate(override, phase=phase, reasoning=reasoning)
     budget.record(trial.score)
     return trial
+
+
+def _quadratic_refine(
+    trials: list[TrialResult],
+    baseline_config: dict[str, Any],
+    param: ParamSpec,
+    executor: TrialExecutor,
+    budget: BudgetController,
+    *,
+    phase: str,
+) -> TrialResult | None:
+    """
+    Fit a parabola to the three best points collected so far on this
+    parameter and, if the fit is convex, probe its analytic minimum.
+
+    Rationale:
+        Golden section + pattern search both converge linearly — each
+        iteration shrinks the bracket by a constant factor but never uses
+        the landscape's curvature. When the objective is well-approximated
+        by a parabola in the local neighborhood (which it usually is near
+        a minimum), one extra probe at the parabola's vertex gets us
+        substantially closer to the true optimum for the cost of a single
+        trial.
+
+    Eligibility gates:
+        - Parameter must be continuous float or int (clampable to number)
+        - At least 3 distinct probes with finite scores
+        - ``np.polyfit(deg=2)`` returns a convex quadratic (a > 0)
+        - The analytic vertex must not already be within 1% of an existing
+          probe, so we don't waste a trial on a point we've all-but-measured
+        - Budget must have at least one run left
+
+    Returns:
+        The new TrialResult if the refinement probe ran, else None.
+    """
+    if param.type not in ("float", "int"):
+        return None
+    if budget.should_stop():
+        return None
+
+    # Keep only probes that have a numeric value for this parameter.
+    numeric: list[tuple[float, TrialResult]] = []
+    for t in trials:
+        v = t.config.get(param.name)
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            if math.isfinite(t.score):
+                numeric.append((float(v), t))
+    if len(numeric) < 3:
+        return None
+
+    # Pick the three lowest-scoring probes, preferring distinct x values.
+    numeric.sort(key=lambda p: p[1].score)
+    picked: list[tuple[float, TrialResult]] = []
+    seen_x: set[float] = set()
+    for x, t in numeric:
+        if x in seen_x:
+            continue
+        picked.append((x, t))
+        seen_x.add(x)
+        if len(picked) == 3:
+            break
+    if len(picked) < 3:
+        return None
+
+    xs = np.array([p[0] for p in picked], dtype=float)
+    ys = np.array([p[1].score for p in picked], dtype=float)
+    try:
+        a, b, _c = np.polyfit(xs, ys, 2)
+    except (np.linalg.LinAlgError, ValueError):
+        return None
+    if not math.isfinite(float(a)) or a <= 0:
+        return None  # concave or ill-conditioned
+
+    x_star = -float(b) / (2.0 * float(a))
+    x_star = param.clamp(x_star)
+
+    # Too close to an existing probe? Skip — no new information to gain.
+    lo = float(param.min) if param.min is not None else min(xs)
+    hi = float(param.max) if param.max is not None else max(xs)
+    span = max(1e-12, hi - lo)
+    for probed_x, _ in picked:
+        if abs(float(x_star) - float(probed_x)) < span * 0.01:
+            return None
+
+    return _evaluate_override(
+        executor,
+        baseline_config,
+        param,
+        x_star,
+        phase + "-quad",
+        f"quadratic-refine vertex={x_star}",
+        budget,
+    )
 
 
 def golden_section_search(
@@ -163,6 +258,11 @@ def golden_section_search(
     early_stopped = False
     early_stop_reason = ""
 
+    # Adaptive patience: when the budget is nearly used up, stop sooner.
+    # Scale linearly between 1 and 3 based on remaining fraction.
+    remaining_ratio = budget.remaining / budget.hard_cap if budget.hard_cap else 1.0
+    adaptive_patience = max(1, int(round(3 * remaining_ratio)))
+
     for i in range(max_iterations):
         iterations = i + 1
         if budget.should_stop():
@@ -192,10 +292,17 @@ def golden_section_search(
             no_improve_streak = 0
         else:
             no_improve_streak += 1
-            if no_improve_streak >= 3:
+            if no_improve_streak >= adaptive_patience:
                 early_stopped = True
-                early_stop_reason = "no improvement in 3 consecutive iterations"
+                early_stop_reason = f"no improvement in {adaptive_patience} consecutive iterations"
                 break
+
+    # Quadratic vertex refinement — cheap curvature-aware extra probe.
+    refined = _quadratic_refine(trials, baseline_config, param, executor, budget, phase=phase)
+    if refined is not None:
+        trials.append(refined)
+        if refined.score < best.score:
+            best = refined
 
     return LocalSearchResult(
         param_name=param.name,
@@ -336,7 +443,13 @@ def pattern_search(
     early_stopped = False
     early_stop_reason = ""
 
-    for i in range(max_iterations):
+    # Adaptive budget awareness: when the controller is nearly exhausted,
+    # cap the outer loop more tightly so we don't burn the remainder on a
+    # step-halving cascade that won't escape.
+    remaining_ratio = budget.remaining / budget.hard_cap if budget.hard_cap else 1.0
+    effective_max = max(1, int(round(max_iterations * max(remaining_ratio, 0.25))))
+
+    for i in range(effective_max):
         iterations = i + 1
         if budget.should_stop():
             early_stopped = True
@@ -374,6 +487,12 @@ def pattern_search(
                 early_stop_reason = "step=1 and no improvement in either direction"
                 break
             step = max(1, step // 2)
+
+    refined = _quadratic_refine(trials, baseline_config, param, executor, budget, phase=phase)
+    if refined is not None:
+        trials.append(refined)
+        if refined.score < best.score:
+            best = refined
 
     return LocalSearchResult(
         param_name=param.name,

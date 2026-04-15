@@ -96,6 +96,94 @@ class OptimizeStartResponse(BaseModel):
     hard_cap: int
 
 
+class TwoStageStartRequest(BaseModel):
+    """
+    Kick off a two-stage coarse→fine IAMS run.
+
+    The request carries the same fields as ``OptimizeStartRequest`` PLUS
+    two durations. Budget/epsilon are optional — if omitted the library's
+    auto-sizing helpers size them from the space and stage durations.
+    """
+
+    model_id: str
+    dataset_id: str
+    lang: str = "en"
+    space: dict[str, Any]
+    objective: ObjectiveConfig
+    mode: str = Field("maximum", pattern="^(fast|balanced|maximum)$")
+    stage1_duration_s: int = Field(900, gt=0)
+    stage2_duration_s: int = Field(2400, gt=0)
+    stage1_budget: int | None = Field(None, ge=1)
+    stage2_budget: int | None = Field(None, ge=1)
+    stage1_epsilon: float | None = Field(None, ge=0)
+    stage2_epsilon: float | None = Field(None, ge=0)
+    top_k_pairs: int = Field(4, ge=2)
+    multistart_candidates: int = Field(3, ge=1)
+    validation_runs: int = Field(3, ge=2)
+    enable_deep_ablation: bool = False
+    use_multifidelity: bool = Field(
+        False,
+        description=(
+            "Enable Hyperband-style rung pruning for Layer 2+ trials. "
+            "Cheap configs get evaluated at 25%/50%/100% of the corpus; "
+            "clearly-worse partial scores short-circuit the trial. "
+            "Layer 1 screening and Layer 7 validation stay at full fidelity."
+        ),
+    )
+
+
+class TwoStageStartResponse(BaseModel):
+    stage1_study_id: str
+    stage2_study_id: str
+    status: str
+    mode: str
+
+
+class GlobalDatasetSpec(BaseModel):
+    """One dataset slot in a global-config run."""
+
+    dataset_id: str
+    lang: str = "en"
+    weight: float = Field(1.0, gt=0)
+
+
+class GlobalConfigStartRequest(BaseModel):
+    """
+    Kick off a two-stage IAMS run over N datasets simultaneously.
+
+    All datasets are evaluated by every IAMS trial; their scores are combined
+    via ``MultiDatasetTrialExecutor`` (variance-weighted CI, weighted mean
+    score) so the optimizer produces ONE config that minimizes the aggregate
+    objective across the whole fleet. Use this when deploying to a product
+    with a single shared preset.
+    """
+
+    model_id: str
+    datasets: list[GlobalDatasetSpec] = Field(..., min_length=1)
+    space: dict[str, Any]
+    objective: ObjectiveConfig
+    mode: str = Field("maximum", pattern="^(fast|balanced|maximum)$")
+    stage1_duration_s: int = Field(900, gt=0)
+    stage2_duration_s: int = Field(2400, gt=0)
+    stage1_budget: int | None = Field(None, ge=1)
+    stage2_budget: int | None = Field(None, ge=1)
+    stage1_epsilon: float | None = Field(None, ge=0)
+    stage2_epsilon: float | None = Field(None, ge=0)
+    top_k_pairs: int = Field(4, ge=2)
+    multistart_candidates: int = Field(3, ge=1)
+    validation_runs: int = Field(3, ge=2)
+    enable_deep_ablation: bool = False
+    use_multifidelity: bool = False
+
+
+class GlobalConfigStartResponse(BaseModel):
+    stage1_study_id: str
+    stage2_study_id: str
+    status: str
+    mode: str
+    dataset_count: int
+
+
 class TrialResponse(BaseModel):
     trial_id: str
     run_id: str | None
@@ -261,6 +349,255 @@ async def start_study(
         status="running",
         mode=req.mode,
         hard_cap=req.budget.hard_cap,
+    )
+
+
+@router.post(
+    "/two-stage",
+    response_model=TwoStageStartResponse,
+    status_code=202,
+)
+async def start_two_stage(
+    req: TwoStageStartRequest, background_tasks: BackgroundTasks
+) -> TwoStageStartResponse:
+    """
+    Start a coarse→fine two-stage optimization run.
+
+    Creates two ``optimization_studies`` rows (one per stage) and runs both
+    in sequence inside a single background task. The Stage-2 study is
+    warm-started from Stage-1's screening result via the library's
+    ``run_two_stage`` orchestrator, which is the same code path CLI and
+    notebook callers use.
+
+    Budget and epsilon default to ``None`` in the request — the library then
+    sizes them from the space (BudgetController.suggest) and the stage
+    duration (suggest_epsilon). Set them explicitly to override.
+    """
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # Validate model + dataset the same way /start does.
+    model_row = cur.execute(
+        "SELECT model_id, backend, default_params, local_path FROM models WHERE model_id = ?",
+        [req.model_id],
+    ).fetchone()
+    if not model_row:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Model '{req.model_id}' not found. Register it first via POST /models.",
+        )
+    backend_name = str(model_row[1])
+    model_local_path = str(model_row[3])
+
+    dataset_row = cur.execute(
+        "SELECT dataset_id, lang FROM datasets WHERE dataset_id = ?",
+        [req.dataset_id],
+    ).fetchone()
+    if not dataset_row:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Dataset '{req.dataset_id}' not found. Add it via POST /datasets/fetch.",
+        )
+
+    running = cur.execute(
+        "SELECT study_id FROM optimization_studies WHERE status = 'running' LIMIT 1"
+    ).fetchone()
+    if running:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"An optimization study is already in progress ({running[0]}). "
+                "Only one concurrent study is supported."
+            ),
+        )
+
+    try:
+        from asrbench.engine.search.space import ParameterSpace
+
+        ParameterSpace.from_dict(req.space)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid parameter space: {exc}") from exc
+
+    try:
+        _build_objective(req.objective)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid objective: {exc}") from exc
+
+    # Insert two placeholder study rows — one per stage. Budget gets the
+    # placeholder 0 when the caller left it as None (the library will resolve
+    # the real value before either stage starts).
+    def _insert_stage(tag: str, budget_val: int | None, eps_val: float | None) -> str:
+        cur.execute(
+            """
+            INSERT INTO optimization_studies
+                (model_id, dataset_id, lang, space, objective, budget,
+                 mode, eps_min, status, started_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', now())
+            RETURNING study_id
+            """,
+            [
+                req.model_id,
+                req.dataset_id,
+                req.lang,
+                json.dumps(req.space),
+                json.dumps(req.objective.model_dump()),
+                json.dumps({"hard_cap": budget_val or 0, "convergence_eps": eps_val or 0.0}),
+                req.mode,
+                eps_val or 0.0,
+                # NB: tag not persisted — kept in the reasoning field when the
+                # background task writes results back.
+            ],
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise HTTPException(status_code=500, detail=f"Failed to insert {tag} study row.")
+        return str(row[0])
+
+    stage1_study_id = _insert_stage("stage1", req.stage1_budget, req.stage1_epsilon)
+    stage2_study_id = _insert_stage("stage2", req.stage2_budget, req.stage2_epsilon)
+
+    background_tasks.add_task(
+        _run_two_stage_background,
+        stage1_study_id=stage1_study_id,
+        stage2_study_id=stage2_study_id,
+        req=req,
+        backend_name=backend_name,
+        model_local_path=model_local_path,
+    )
+
+    return TwoStageStartResponse(
+        stage1_study_id=stage1_study_id,
+        stage2_study_id=stage2_study_id,
+        status="running",
+        mode=req.mode,
+    )
+
+
+@router.post(
+    "/global-config",
+    response_model=GlobalConfigStartResponse,
+    status_code=202,
+)
+async def start_global_config(
+    req: GlobalConfigStartRequest, background_tasks: BackgroundTasks
+) -> GlobalConfigStartResponse:
+    """
+    Start a two-stage IAMS run across N datasets with aggregate scoring.
+
+    Unlike ``/optimize/two-stage`` (one dataset, one optimal config), this
+    endpoint drives a ``MultiDatasetTrialExecutor``: every trial evaluates
+    the candidate config on ALL listed datasets, weights the per-dataset
+    scores, and returns one aggregate. IAMS's 7-layer algorithm then
+    produces a single global config that minimizes the weighted mean.
+
+    Use when a downstream product ships one shared preset to every user
+    — e.g. a mobile ASR app tuned across clean/noisy/multilingual
+    corpora simultaneously.
+    """
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # Validate model
+    model_row = cur.execute(
+        "SELECT model_id, backend, default_params, local_path FROM models WHERE model_id = ?",
+        [req.model_id],
+    ).fetchone()
+    if not model_row:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Model '{req.model_id}' not found.",
+        )
+    backend_name = str(model_row[1])
+    model_local_path = str(model_row[3])
+
+    # Validate every dataset_id up-front — fail fast on bad input.
+    missing: list[str] = []
+    for ds in req.datasets:
+        row = cur.execute(
+            "SELECT dataset_id FROM datasets WHERE dataset_id = ?",
+            [ds.dataset_id],
+        ).fetchone()
+        if not row:
+            missing.append(ds.dataset_id)
+    if missing:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Datasets not found: {missing}",
+        )
+
+    running = cur.execute(
+        "SELECT study_id FROM optimization_studies WHERE status = 'running' LIMIT 1"
+    ).fetchone()
+    if running:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"An optimization study is already in progress ({running[0]}). "
+                "Only one concurrent study is supported."
+            ),
+        )
+
+    try:
+        from asrbench.engine.search.space import ParameterSpace
+
+        ParameterSpace.from_dict(req.space)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid parameter space: {exc}") from exc
+
+    try:
+        _build_objective(req.objective)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid objective: {exc}") from exc
+
+    # Two study rows — mirror the two-stage endpoint. The dataset_id column
+    # gets the first dataset's id as a stand-in (the "primary" dataset);
+    # the full fleet is captured in the study's reasoning blob.
+    primary_dataset_id = req.datasets[0].dataset_id
+    primary_lang = req.datasets[0].lang
+
+    def _insert_stage(budget_val: int | None, eps_val: float | None) -> str:
+        cur.execute(
+            """
+            INSERT INTO optimization_studies
+                (model_id, dataset_id, lang, space, objective, budget,
+                 mode, eps_min, status, started_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', now())
+            RETURNING study_id
+            """,
+            [
+                req.model_id,
+                primary_dataset_id,
+                primary_lang,
+                json.dumps(req.space),
+                json.dumps(req.objective.model_dump()),
+                json.dumps({"hard_cap": budget_val or 0, "convergence_eps": eps_val or 0.0}),
+                req.mode,
+                eps_val or 0.0,
+            ],
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise HTTPException(status_code=500, detail="Failed to insert study row.")
+        return str(row[0])
+
+    stage1_study_id = _insert_stage(req.stage1_budget, req.stage1_epsilon)
+    stage2_study_id = _insert_stage(req.stage2_budget, req.stage2_epsilon)
+
+    background_tasks.add_task(
+        _run_global_config_background,
+        stage1_study_id=stage1_study_id,
+        stage2_study_id=stage2_study_id,
+        req=req,
+        backend_name=backend_name,
+        model_local_path=model_local_path,
+    )
+
+    return GlobalConfigStartResponse(
+        stage1_study_id=stage1_study_id,
+        stage2_study_id=stage2_study_id,
+        status="running",
+        mode=req.mode,
+        dataset_count=len(req.datasets),
     )
 
 
@@ -527,6 +864,16 @@ async def _run_study_background(
             if req.prior_study_id:
                 prior_screening = _warm_start(cur, executor, req.prior_study_id, space)
 
+            # Build a mode hint so the backend can advertise which params it
+            # actually honors (batched vs sequential, for instance). The space
+            # default for batch_size is the single source of truth — callers
+            # that want batched mode declare it there.
+            mode_hint: dict[str, Any] = {}
+            try:
+                mode_hint["batch_size"] = int(space.defaults().get("batch_size", 0))
+            except (TypeError, ValueError):
+                mode_hint["batch_size"] = 0
+
             optimizer = IAMSOptimizer(
                 executor=executor,
                 space=space,
@@ -539,6 +886,8 @@ async def _run_study_background(
                 validation_runs=req.validation_runs,
                 enable_deep_ablation=req.enable_deep_ablation,
                 prior_screening=prior_screening,
+                backend=backend_instance,
+                mode_hint=mode_hint,
             )
             result = optimizer.run()
         finally:
@@ -592,6 +941,411 @@ async def _run_study_background(
             "error_message = ? WHERE study_id = ?",
             [err_msg[:4000], study_id],
         )
+
+
+async def _run_two_stage_background(
+    *,
+    stage1_study_id: str,
+    stage2_study_id: str,
+    req: TwoStageStartRequest,
+    backend_name: str,
+    model_local_path: str,
+) -> None:
+    """
+    Background task: run the library's ``run_two_stage`` orchestrator and
+    persist each stage's result to its own ``optimization_studies`` row.
+
+    Both stage rows were inserted with ``status='running'`` by the endpoint
+    handler. On success both get marked ``completed``; on failure the stage
+    that blew up (or both, if the error came before Stage 1) is marked
+    ``failed`` with the exception text.
+    """
+    from asrbench.config import get_config
+    from asrbench.data.dataset_manager import DatasetManager
+    from asrbench.engine.benchmark import BenchmarkEngine
+    from asrbench.engine.search.benchmark_executor import BenchmarkTrialExecutor
+    from asrbench.engine.search.space import ParameterSpace
+    from asrbench.engine.two_stage import TwoStageConfig, run_two_stage
+
+    conn = get_conn()
+    cur = conn.cursor()
+    current_stage_id = stage1_study_id  # for error reporting
+    try:
+        config = get_config()
+        dm = DatasetManager(config, conn)
+
+        from asrbench.backends import load_backends
+
+        backends = load_backends()
+        if backend_name not in backends:
+            raise RuntimeError(
+                f"Backend '{backend_name}' is not installed. "
+                f"Install it: pip install 'asrbench[{backend_name}]'"
+            )
+        backend_cls = backends[backend_name]
+        backend_instance = backend_cls()
+
+        space = ParameterSpace.from_dict(req.space)
+        objective = _build_objective(req.objective)
+
+        logger.info(
+            "Two-stage %s/%s: loading model %s",
+            stage1_study_id,
+            stage2_study_id,
+            model_local_path,
+        )
+        backend_instance.load(model_local_path, space.defaults())
+
+        try:
+            engine = BenchmarkEngine(conn, cache_dir=config.storage.cache_dir)
+
+            # run_two_stage calls dataset_loader and executor_factory twice
+            # — once per stage, in order. A simple factory-call counter is
+            # enough to bind each stage's trial rows to the right study_id.
+            stage_ids = [stage1_study_id, stage2_study_id]
+            factory_call_count = {"n": 0}
+
+            def dataset_loader(duration_s: int):  # type: ignore[no-untyped-def]
+                current = stage_ids[min(factory_call_count["n"], 1)]
+                logger.info(
+                    "Two-stage %s: preparing dataset %s (cap=%ds)",
+                    current,
+                    req.dataset_id,
+                    duration_s,
+                )
+                return dm.prepare(req.dataset_id, max_duration_s=float(duration_s))
+
+            def executor_factory(prepared, duration_s):  # type: ignore[no-untyped-def]
+                _ = duration_s
+                current = stage_ids[min(factory_call_count["n"], 1)]
+                factory_call_count["n"] += 1
+                return BenchmarkTrialExecutor(
+                    engine=engine,
+                    conn=conn,
+                    study_id=current,
+                    model_id=req.model_id,
+                    backend_name=backend_name,
+                    model_local_path=model_local_path,
+                    dataset=prepared,
+                    objective=objective,
+                    backend=backend_instance,
+                    lang=req.lang,
+                )
+
+            mode_hint: dict[str, Any] = {}
+            try:
+                mode_hint["batch_size"] = int(space.defaults().get("batch_size", 0))
+            except (TypeError, ValueError):
+                mode_hint["batch_size"] = 0
+
+            cfg = TwoStageConfig(
+                stage1_duration_s=req.stage1_duration_s,
+                stage2_duration_s=req.stage2_duration_s,
+                stage1_budget=req.stage1_budget,
+                stage2_budget=req.stage2_budget,
+                stage1_epsilon=req.stage1_epsilon,
+                stage2_epsilon=req.stage2_epsilon,
+                mode=req.mode,
+                top_k_pairs=req.top_k_pairs,
+                multistart_candidates=req.multistart_candidates,
+                validation_runs=req.validation_runs,
+                enable_deep_ablation=req.enable_deep_ablation,
+                use_multifidelity=req.use_multifidelity,
+            )
+
+            current_stage_id = stage1_study_id
+            result = run_two_stage(
+                space=space,
+                objective=objective,
+                backend=backend_instance,
+                mode_hint=mode_hint,
+                dataset_loader=dataset_loader,
+                executor_factory=executor_factory,
+                cfg=cfg,
+            )
+        finally:
+            backend_instance.unload()
+
+        # Persist both stage rows.
+        for stage_id, stage_result in (
+            (stage1_study_id, result.stage1),
+            (stage2_study_id, result.stage2),
+        ):
+            screening_json = json.dumps(
+                {
+                    "sensitive_order": list(stage_result.screening.sensitive_order),
+                    "insensitive": list(stage_result.screening.insensitive),
+                }
+            )
+            cur.execute(
+                """
+                UPDATE optimization_studies
+                SET status = 'completed',
+                    best_run_id = ?,
+                    best_score = ?,
+                    best_config = ?,
+                    confidence = ?,
+                    total_trials = ?,
+                    reasoning = ?,
+                    screening_result = ?,
+                    finished_at = now()
+                WHERE study_id = ?
+                """,
+                [
+                    stage_result.best_trial.trial_id,
+                    stage_result.best_trial.score,
+                    json.dumps(dict(stage_result.best_config)),
+                    stage_result.validation.confidence if stage_result.validation else None,
+                    stage_result.total_trials,
+                    json.dumps(list(stage_result.reasoning)),
+                    screening_json,
+                    stage_id,
+                ],
+            )
+        logger.info(
+            "Two-stage complete: stage1=%s (%d trials), stage2=%s (%d trials)",
+            stage1_study_id,
+            result.stage1.total_trials,
+            stage2_study_id,
+            result.stage2.total_trials,
+        )
+    except Exception as exc:
+        import traceback
+
+        err_msg = f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
+        logger.error(
+            "Two-stage %s failed at stage %s: %s",
+            stage2_study_id,
+            current_stage_id,
+            exc,
+            exc_info=True,
+        )
+        # Mark any still-running stage rows as failed.
+        for sid in (stage1_study_id, stage2_study_id):
+            row = cur.execute(
+                "SELECT status FROM optimization_studies WHERE study_id = ?",
+                [sid],
+            ).fetchone()
+            if row and str(row[0]) == "running":
+                cur.execute(
+                    "UPDATE optimization_studies SET status = 'failed', "
+                    "finished_at = now(), error_message = ? WHERE study_id = ?",
+                    [err_msg[:4000], sid],
+                )
+
+
+async def _run_global_config_background(
+    *,
+    stage1_study_id: str,
+    stage2_study_id: str,
+    req: GlobalConfigStartRequest,
+    backend_name: str,
+    model_local_path: str,
+) -> None:
+    """
+    Background task: run library's ``run_two_stage`` over a
+    ``MultiDatasetTrialExecutor`` wrapping N prepared datasets.
+
+    Each logical IAMS trial hits every dataset and aggregates scores; the
+    7-layer algorithm produces ONE config optimized for the fleet. Per-
+    dataset trial rows still go to ``optimization_trials`` (one per
+    dataset per trial), so the audit trail shows component breakdowns.
+    """
+    from asrbench.config import get_config
+    from asrbench.data.dataset_manager import DatasetManager
+    from asrbench.engine.benchmark import BenchmarkEngine
+    from asrbench.engine.search.benchmark_executor import BenchmarkTrialExecutor
+    from asrbench.engine.search.multidataset import MultiDatasetTrialExecutor
+    from asrbench.engine.search.space import ParameterSpace
+    from asrbench.engine.two_stage import TwoStageConfig, run_two_stage
+
+    conn = get_conn()
+    cur = conn.cursor()
+    current_stage_id = stage1_study_id
+    try:
+        config = get_config()
+        dm = DatasetManager(config, conn)
+
+        from asrbench.backends import load_backends
+
+        backends = load_backends()
+        if backend_name not in backends:
+            raise RuntimeError(
+                f"Backend '{backend_name}' is not installed. "
+                f"Install it: pip install 'asrbench[{backend_name}]'"
+            )
+        backend_cls = backends[backend_name]
+        backend_instance = backend_cls()
+
+        space = ParameterSpace.from_dict(req.space)
+        objective = _build_objective(req.objective)
+
+        logger.info(
+            "Global-config %s/%s: loading model %s (N=%d datasets)",
+            stage1_study_id,
+            stage2_study_id,
+            model_local_path,
+            len(req.datasets),
+        )
+        backend_instance.load(model_local_path, space.defaults())
+
+        try:
+            engine = BenchmarkEngine(conn, cache_dir=config.storage.cache_dir)
+
+            # Stage-binding counter: run_two_stage calls dataset_loader /
+            # executor_factory twice — once per stage — in order.
+            stage_ids = [stage1_study_id, stage2_study_id]
+            factory_call_count = {"n": 0}
+            weights = [ds.weight for ds in req.datasets]
+            labels = [f"{ds.dataset_id[:8]}_{ds.lang}" for ds in req.datasets]
+
+            def dataset_loader(duration_s: int):  # type: ignore[no-untyped-def]
+                current = stage_ids[min(factory_call_count["n"], 1)]
+                logger.info(
+                    "Global-config %s: preparing %d datasets at cap=%ds",
+                    current,
+                    len(req.datasets),
+                    duration_s,
+                )
+                prepared = [
+                    dm.prepare(ds.dataset_id, max_duration_s=float(duration_s))
+                    for ds in req.datasets
+                ]
+                return prepared  # opaque bundle — factory closes over it
+
+            def executor_factory(prepared_bundle, duration_s):  # type: ignore[no-untyped-def]
+                _ = duration_s
+                current = stage_ids[min(factory_call_count["n"], 1)]
+                factory_call_count["n"] += 1
+                inner = [
+                    BenchmarkTrialExecutor(
+                        engine=engine,
+                        conn=conn,
+                        study_id=current,
+                        model_id=req.model_id,
+                        backend_name=backend_name,
+                        model_local_path=model_local_path,
+                        dataset=prepared,
+                        objective=objective,
+                        backend=backend_instance,
+                        lang=ds_spec.lang,
+                    )
+                    for prepared, ds_spec in zip(prepared_bundle, req.datasets)
+                ]
+                return MultiDatasetTrialExecutor(
+                    executors=inner,
+                    weights=weights,
+                    labels=labels,
+                )
+
+            mode_hint: dict[str, Any] = {}
+            try:
+                mode_hint["batch_size"] = int(space.defaults().get("batch_size", 0))
+            except (TypeError, ValueError):
+                mode_hint["batch_size"] = 0
+
+            cfg = TwoStageConfig(
+                stage1_duration_s=req.stage1_duration_s,
+                stage2_duration_s=req.stage2_duration_s,
+                stage1_budget=req.stage1_budget,
+                stage2_budget=req.stage2_budget,
+                stage1_epsilon=req.stage1_epsilon,
+                stage2_epsilon=req.stage2_epsilon,
+                mode=req.mode,
+                top_k_pairs=req.top_k_pairs,
+                multistart_candidates=req.multistart_candidates,
+                validation_runs=req.validation_runs,
+                enable_deep_ablation=req.enable_deep_ablation,
+                use_multifidelity=req.use_multifidelity,
+            )
+
+            current_stage_id = stage1_study_id
+            result = run_two_stage(
+                space=space,
+                objective=objective,
+                backend=backend_instance,
+                mode_hint=mode_hint,
+                dataset_loader=dataset_loader,
+                executor_factory=executor_factory,
+                cfg=cfg,
+            )
+        finally:
+            backend_instance.unload()
+
+        # Persist both stage rows. ``reasoning`` gets a "datasets=[...]"
+        # header so audit consumers can see which fleet this global
+        # config was tuned against.
+        dataset_fleet_summary = [
+            {"dataset_id": ds.dataset_id, "lang": ds.lang, "weight": ds.weight}
+            for ds in req.datasets
+        ]
+        for stage_id, stage_result in (
+            (stage1_study_id, result.stage1),
+            (stage2_study_id, result.stage2),
+        ):
+            screening_json = json.dumps(
+                {
+                    "sensitive_order": list(stage_result.screening.sensitive_order),
+                    "insensitive": list(stage_result.screening.insensitive),
+                }
+            )
+            reasoning_with_fleet = [
+                f"[global-config over {len(req.datasets)} datasets: {dataset_fleet_summary}]",
+                *stage_result.reasoning,
+            ]
+            cur.execute(
+                """
+                UPDATE optimization_studies
+                SET status = 'completed',
+                    best_run_id = ?,
+                    best_score = ?,
+                    best_config = ?,
+                    confidence = ?,
+                    total_trials = ?,
+                    reasoning = ?,
+                    screening_result = ?,
+                    finished_at = now()
+                WHERE study_id = ?
+                """,
+                [
+                    stage_result.best_trial.trial_id,
+                    stage_result.best_trial.score,
+                    json.dumps(dict(stage_result.best_config)),
+                    stage_result.validation.confidence if stage_result.validation else None,
+                    stage_result.total_trials,
+                    json.dumps(reasoning_with_fleet),
+                    screening_json,
+                    stage_id,
+                ],
+            )
+        logger.info(
+            "Global-config complete: stage1=%s, stage2=%s, N_datasets=%d",
+            stage1_study_id,
+            stage2_study_id,
+            len(req.datasets),
+        )
+    except Exception as exc:
+        import traceback
+
+        err_msg = f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
+        logger.error(
+            "Global-config %s failed at stage %s: %s",
+            stage2_study_id,
+            current_stage_id,
+            exc,
+            exc_info=True,
+        )
+        for sid in (stage1_study_id, stage2_study_id):
+            row = cur.execute(
+                "SELECT status FROM optimization_studies WHERE study_id = ?",
+                [sid],
+            ).fetchone()
+            if row and str(row[0]) == "running":
+                cur.execute(
+                    "UPDATE optimization_studies SET status = 'failed', "
+                    "finished_at = now(), error_message = ? WHERE study_id = ?",
+                    [err_msg[:4000], sid],
+                )
 
 
 def _warm_start(

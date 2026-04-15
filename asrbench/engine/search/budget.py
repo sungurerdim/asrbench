@@ -30,6 +30,10 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from asrbench.engine.search.space import ParameterSpace
 
 
 @dataclass
@@ -130,6 +134,45 @@ class BudgetController:
     def should_stop(self) -> bool:
         """Convenience: can_run() is False OR has_converged() is True."""
         return (not self.can_run()) or self.has_converged()
+
+    @staticmethod
+    def suggest(
+        space: ParameterSpace,
+        *,
+        phase: Literal["coarse", "fine"],
+        warm_start: bool = False,
+    ) -> int:
+        """
+        Recommend a trial-count cap for one optimization phase.
+
+        The goal is to free the caller from guessing how many trials a space
+        needs: the size comes from the parameter count and the phase's typical
+        workload. The numbers below are derived from the IAMS layer costs:
+
+        Coarse phase (Stage 1 or single-stage warmup):
+            L1 screening: 1 + 2N trials (skipped entirely on warm-start)
+            L2 coarse exploration: roughly N/2 + 10 coordinate steps
+            → total ≈ L1 + L2_coarse, floored at 15 so tiny spaces still
+              get some refinement budget.
+
+        Fine phase (Stage 2 refinement):
+            L2 refine + L3 pairwise + L4 multi-start + L5 ablation +
+            L6 refinement + L7 validation — collectively about N + 20 trials
+            on typical spaces, floored at 30.
+
+        Parameters:
+            space: the ParameterSpace the suggestion applies to.
+            phase: "coarse" for stage 1 / screening-heavy runs, "fine" for
+                stage 2 / warm-start refinement.
+            warm_start: drop the L1 screening allowance (2N + 1 trials) since
+                the screening metadata is being imported from a prior study.
+        """
+        n = len(space.parameters)
+        if phase == "coarse":
+            l1 = 0 if warm_start else (1 + 2 * n)
+            l2_coarse = max(15, n // 2 + 10)
+            return l1 + l2_coarse
+        return max(30, n + 20)
 
     def summary(self) -> dict:
         """Structured snapshot for study.json logging."""

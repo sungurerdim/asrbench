@@ -238,6 +238,24 @@ class ParameterSpace:
         name_set = set(names)
         return ParameterSpace(parameters=tuple(p for p in self.parameters if p.name in name_set))
 
+    def restrict_to(self, allowed: set[str]) -> ParameterSpace:
+        """
+        Return a new space containing only params whose name is in ``allowed``
+        OR starts with ``preprocess.`` (always kept — preprocessing runs outside
+        the backend surface so no backend honor set applies).
+
+        Used by IAMSOptimizer to drop runtime no-op params before Layer 1.
+        If the filter would empty the space, this is a no-op and the original
+        space is returned unchanged — better to waste a few trials than to
+        raise ParameterSpace's "at least one parameter" invariant.
+        """
+        kept = tuple(
+            p for p in self.parameters if p.name in allowed or p.name.startswith("preprocess.")
+        )
+        if not kept:
+            return self
+        return ParameterSpace(parameters=kept)
+
     def with_config(self, base: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
         """
         Merge overrides onto base, clamping each override through its ParamSpec.

@@ -83,6 +83,7 @@ class TrialResult:
     phase: str = "unknown"
     reasoning: str = ""
     trial_id: str | None = None
+    pruned: bool = False  # True if this trial was cut short by multi-fidelity gating
 
     def config_key(self) -> str:
         """
@@ -126,6 +127,7 @@ class TrialResult:
             phase=phase,
             reasoning=reasoning or self.reasoning,
             trial_id=self.trial_id,
+            pruned=self.pruned,
         )
 
 
@@ -266,6 +268,20 @@ class SyntheticTrialExecutor:
         if self._cache_enabled:
             self._cache[key] = result
         return result
+
+    def evaluate_at_fraction(
+        self,
+        config: Mapping[str, Any],
+        *,
+        phase: str = "unknown",
+        reasoning: str = "",
+        fraction: float = 1.0,  # noqa: ARG002 — synthetic executor has no segments to slice
+    ) -> TrialResult:
+        """
+        Multi-fidelity hook: synthetic executors have no segments to slice,
+        so ``fraction`` is accepted for protocol compatibility and ignored.
+        """
+        return self.evaluate(config, phase=phase, reasoning=reasoning)
 
     @staticmethod
     def _config_key(config: Mapping[str, Any]) -> str:

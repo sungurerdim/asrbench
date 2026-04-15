@@ -1,7 +1,7 @@
 # IAMS parameter space for faster-whisper backend.
 #
-# 17 parameters (10 backend + 7 preprocessing).
-# L1 screening budget: 1 + 2×17 = 35 trials (baseline + min/max per param).
+# 26 parameters (10 backend + 16 preprocessing).
+# L1 screening budget: 1 + 2×26 = 53 trials (baseline + min/max per param).
 #
 # Design rules:
 #   - min/max define the IAMS sweep range for L1 OFAT-3 screening.
@@ -85,18 +85,42 @@ parameters:
     # L2 exhaustive (2 values); Silero VAD pre-filter
 
   # ── Preprocessing (preprocess.* prefix) ──────────────────────────────
+  #
+  # FFmpeg compatibility legend (ffmpeg_compat):
+  #   [ffmpeg: identical] — same filter exists, byte-for-byte identical output
+  #   [ffmpeg: approx]    — scipy approximation; ffmpeg backend is more accurate
+  #   [ffmpeg: aeval]     — no direct FFmpeg filter, synthesized via aeval
+  #   [ffmpeg: scipy-only] — scipy path only, ffmpeg backend falls back here
+  #
+  # When deploying the tuned config on a mobile FFmpeg chain, the
+  # ``[ffmpeg: aeval]`` and ``[ffmpeg: scipy-only]`` knobs may not be
+  # reproducible 1:1. Prefer ``backend=ffmpeg`` during optimization for
+  # those cases, or pin the knobs to their no-op defaults.
+
+  preprocess.backend:
+    type: enum
+    values: [scipy, ffmpeg]
+    default: scipy
+    # L2 exhaustive (2 values); filter implementation selector.
+    # scipy = fast, dependency-free, signal-theory-equivalent.
+    # ffmpeg = byte-accurate mobile pipeline parity (requires ffmpeg binary
+    # on PATH). 2-5x slower per trial; use when tuning a config that will
+    # be deployed on a device running FFmpeg at capture time.
 
   preprocess.format:
     type: enum
     values: [none, opus_64k, opus_32k, opus_24k]
     default: none
     # L2 exhaustive (4 values); codec artifact simulation (opus lossy roundtrip)
+    # [ffmpeg: scipy-only] — codec roundtrip runs in the scipy path even
+    # when backend=ffmpeg; FFmpeg filter chain does not encode/decode.
 
   preprocess.sample_rate:
     type: enum
     values: [8000, 16000, 22050]
     default: 16000
     # L2 exhaustive (3 values); 8k=telephony, 16k=native whisper, 22k=reference
+    # [ffmpeg: identical] — aresample chain mirrors scipy round-trip.
 
   preprocess.lufs_target:
     type: float
@@ -105,6 +129,37 @@ parameters:
     max: -10.0
     step: 2.0
     # 8 values → L2 exhaustive; -16=broadcast standard, LUFS ~2dB perceptual res
+    # [ffmpeg: approx] — scipy uses single-pass pyloudnorm; ffmpeg uses
+    # the real two-pass loudnorm filter. Prefer backend=ffmpeg for
+    # mobile parity.
+
+  preprocess.lufs_lra:
+    type: enum
+    values: [7, 11, 15]
+    default: 7
+    # L2 exhaustive (3 values); FFmpeg loudnorm LRA target (LU).
+    # Lower = tighter dynamic range; 7=FFmpeg default. Only consulted
+    # when lufs_target is set.
+    # [ffmpeg: approx] — scipy path approximates via soft compression.
+
+  preprocess.loudnorm_linear:
+    type: bool
+    default: false
+    # L2 exhaustive (2 values); linear (single-pass gain) vs. dynamic
+    # (two-pass compressor) loudnorm mode. Matches FFmpeg loudnorm
+    # ``linear=true/false``. Linear preserves transients.
+    # [ffmpeg: identical] — same semantics in both backends.
+    #
+    # NOTE: SafeScribeAI phase1 (2026-04-14, wer_results_log.jsonl)
+    # measured Δwer_pp = 0.000 for linear flip at ``lufs_target=-16``
+    # across 6 runs × 3 datasets, but ONLY at that center target. At
+    # extremes (e.g. lufs_target=-20 on noisy TR data) dynamic mode
+    # caused a +89 pp catastrophic failure — linear=true might have
+    # rescued that trial. Kept in the sweep so L5 ablation can prune
+    # it when genuinely insensitive and exercise it where the rescue
+    # matters. Additional caveat: those measurements used a
+    # pre-tuned baseline (SafeScribeAI mobile_preprocessing ON +
+    # custom transcription params), not a pristine asrbench default.
 
   preprocess.highpass_hz:
     type: int
@@ -112,6 +167,7 @@ parameters:
     default: 80
     max: 300
     # 301 values → L2 pattern search; 0=off, male F0~85Hz, 300=boundary
+    # [ffmpeg: identical] — FFmpeg highpass filter.
 
   preprocess.drc_ratio:
     type: float
@@ -120,6 +176,9 @@ parameters:
     max: 4.0
     step: 0.5
     # 7 values → L2 exhaustive; 1.0=off, >4.0 over-compresses
+    # [ffmpeg: approx] — scipy DRC vs FFmpeg acompressor differ in
+    # attack/release curves; use backend=ffmpeg if DRC is in your mobile
+    # chain.
 
   preprocess.noise_reduce:
     type: float
@@ -128,8 +187,70 @@ parameters:
     max: 0.8
     step: 0.1
     # 9 values → L2 exhaustive; >0.8 causes speech artifacts
+    # [ffmpeg: approx] — scipy uses spectral subtraction, FFmpeg uses
+    # afftdn. Not byte-identical even under backend=ffmpeg.
 
   preprocess.vad_trim:
     type: bool
     default: false
     # L2 exhaustive (2 values); silence removal before transcription
+    # [ffmpeg: identical] — FFmpeg silenceremove filter.
+
+  preprocess.silence_threshold_db:
+    type: float
+    min: -60.0
+    default: -40.0
+    max: -30.0
+    step: 5.0
+    # 7 values → L2 exhaustive; frame-RMS dBFS below which a frame is
+    # silence. Mirrors FFmpeg silenceremove ``threshold_db``. Only
+    # consulted when vad_trim=true. Lower = more conservative trim.
+    # [ffmpeg: identical]
+
+  preprocess.silence_min_duration_s:
+    type: float
+    min: 0.3
+    default: 0.5
+    max: 2.0
+    step: 0.1
+    # 18 values → L2 pattern search; maximum contiguous silence kept
+    # inside a trimmed segment. Mirrors FFmpeg silenceremove
+    # ``duration``. Only consulted when vad_trim=true.
+    # [ffmpeg: identical]
+
+  # ── Preprocessing — shaping (sector-standard, v3) ────────────────────
+
+  preprocess.notch_hz:
+    type: enum
+    values: [0, 50, 60]
+    default: 0
+    # L2 exhaustive (3 values); IIR notch (Q=30) for mains hum
+    # 0=off, 50=EU/TR, 60=US/JP
+    # [ffmpeg: identical] — bandreject=f={hz}:width_type=q:w=30
+
+  preprocess.lowpass_hz:
+    type: enum
+    values: [0, 7000, 7500]
+    default: 0
+    # L2 exhaustive (3 values); 4th-order Butterworth lowpass
+    # 0=off, 7000/7500=HF noise shaping at 16 kHz
+    # [ffmpeg: identical] — FFmpeg lowpass filter.
+
+  preprocess.limiter_ceiling_db:
+    type: enum
+    values: [0.0, -1.0, -3.0]
+    default: 0.0
+    # L2 exhaustive (3 values); soft tanh peak limiter (alimiter equivalent)
+    # 0.0=off, -1.0=broadcast/streaming true-peak, -3.0=conservative
+    # [ffmpeg: approx] — scipy uses soft-tanh, ffmpeg uses alimiter with
+    # look-ahead. Use backend=ffmpeg for mobile parity.
+
+  preprocess.preemph_coef:
+    type: enum
+    values: [0.0, 0.97]
+    default: 0.0
+    # L2 exhaustive (2 values); classical FIR pre-emphasis y[n] = x[n] − α·x[n−1]
+    # 0.0=off, 0.97=Kaldi/HTK/ESPnet default
+    # [ffmpeg: aeval] — FFmpeg has no direct preemph filter; backend=ffmpeg
+    # synthesizes it via ``aeval=val(0)-α*val(-1)``. Verify the aeval
+    # form on your FFmpeg build before deploying.

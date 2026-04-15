@@ -66,3 +66,24 @@ class BaseBackend(ABC):
             RuntimeError: if model is not loaded.
         """
         ...
+
+    def supported_params(self, *, mode_hint: dict | None = None) -> set[str] | None:
+        """
+        Return the subset of parameter names the backend actually honors
+        in the given runtime mode, or None to opt out of filtering.
+
+        Default None = "accept everything" — existing behavior (signature-level
+        filtering happens inside transcribe()). Override in a subclass when the
+        backend silently ignores a subset of params in a particular mode (e.g.
+        faster-whisper batched mode drops VAD / without_timestamps / etc.).
+
+        The IAMSOptimizer uses this return value to restrict the ParameterSpace
+        before Layer 1 screening — no trial budget is spent probing params the
+        backend will ignore at runtime.
+
+        Parameters that start with ``preprocess.`` are always kept by the
+        optimizer regardless of this return value — they live outside the
+        backend surface.
+        """
+        _ = mode_hint  # default impl ignores mode; subclasses consume it
+        return None

@@ -164,30 +164,46 @@ class BenchmarkTrialExecutor:
         reasoning: str = "",
     ) -> TrialResult:
         """
-        Execute a benchmark run for this config and return the corresponding
-        TrialResult.
-
-        This call is SYNCHRONOUS from the caller's perspective — internally
-        it drives an asyncio event loop because BenchmarkEngine.run() is an
-        async coroutine. A fresh loop is created per call so the executor can
-        be used from both sync and async contexts.
+        Execute a full-dataset benchmark run for this config and return the
+        corresponding TrialResult.
         """
+        return self._evaluate_impl(config, phase=phase, reasoning=reasoning, fraction=1.0)
+
+    def evaluate_at_fraction(
+        self,
+        config: Mapping[str, Any],
+        *,
+        phase: str = "unknown",
+        reasoning: str = "",
+        fraction: float = 1.0,
+    ) -> TrialResult:
+        """
+        Multi-fidelity hook: run a benchmark against the first
+        ``ceil(N * fraction)`` segments. Fraction == 1.0 is identical to
+        ``evaluate()``. Partial runs do NOT hit the config-level cache —
+        they're keyed to the full-fidelity result only.
+        """
+        return self._evaluate_impl(config, phase=phase, reasoning=reasoning, fraction=fraction)
+
+    def _evaluate_impl(
+        self,
+        config: Mapping[str, Any],
+        *,
+        phase: str,
+        reasoning: str,
+        fraction: float,
+    ) -> TrialResult:
         key = self._config_key(config)
-        if key in self._cache:
+        # Only full-fidelity runs participate in the cache — partial rungs
+        # are measured against a different corpus slice and must not collide.
+        if fraction >= 1.0 and key in self._cache:
             cached = self._cache[key]
             self._persist_trial(cached, phase, reasoning, cached.trial_id)
             return cached.with_phase(phase, reasoning)
 
-        # Serialize config once for both DB writes
         config_json = json.dumps(dict(config))
-
-        # Insert a new row in `runs`
         run_id = self._create_run_row(config_json)
 
-        # Run the benchmark synchronously.
-        # asyncio.run() cannot be called from inside an already-running event loop
-        # (e.g. FastAPI background tasks).  Spin up an isolated thread that owns
-        # its own event loop so we are always safe regardless of call context.
         import concurrent.futures
 
         try:
@@ -201,13 +217,13 @@ class BenchmarkTrialExecutor:
                         params=dict(config),
                         model_family=None,
                         model_local_path=self.model_local_path,
+                        segment_fraction=fraction,
                     ),
                 ).result()
         except Exception as exc:
             logger.error("BenchmarkTrialExecutor: run %s failed: %s", run_id, exc)
             raise
 
-        # Read back aggregate
         metrics = self._read_aggregate(run_id)
         score = self.objective.score(metrics)
         score_ci = self.objective.score_ci(metrics)
@@ -223,7 +239,8 @@ class BenchmarkTrialExecutor:
         )
 
         self._runs_used += 1
-        self._cache[key] = trial
+        if fraction >= 1.0:
+            self._cache[key] = trial
         self._persist_trial(trial, phase, reasoning, run_id, config_json)
         return trial
 

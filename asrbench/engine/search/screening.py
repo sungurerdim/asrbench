@@ -130,11 +130,16 @@ class ScreeningPhase:
         space: ParameterSpace,
         budget: BudgetController,
         eps_min: float = 0.005,
+        prior_sensitivity_hints: dict[str, float] | None = None,
     ) -> None:
         self.executor = executor
         self.space = space
         self.budget = budget
         self.eps_min = eps_min
+        # Optional {param_name -> expected_sensitivity} hint map. When present,
+        # parameters with larger hints are screened first so a tight budget
+        # still covers the highest-leverage probes.
+        self.prior_sensitivity_hints = prior_sensitivity_hints or {}
 
     def run(self) -> ScreeningResult:
         # === Baseline ===
@@ -155,7 +160,17 @@ class ScreeningPhase:
         result.trials.append(baseline)
 
         # === Boundary probes per parameter ===
-        for spec in self.space.parameters:
+        if self.prior_sensitivity_hints:
+            # Probe high-leverage parameters first so a tight budget still
+            # covers them. Unknown params fall to the tail with hint 0.
+            ordered_params = sorted(
+                self.space.parameters,
+                key=lambda p: self.prior_sensitivity_hints.get(p.name, 0.0),
+                reverse=True,
+            )
+        else:
+            ordered_params = list(self.space.parameters)
+        for spec in ordered_params:
             # Budget check: need 2 more runs for this parameter
             if not self.budget.can_run(n=2):
                 result.unscreened.append(spec.name)

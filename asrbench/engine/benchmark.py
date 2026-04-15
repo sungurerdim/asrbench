@@ -63,9 +63,17 @@ class BenchmarkEngine:
         params: dict,
         model_family: str | None,
         model_local_path: str,
+        segment_fraction: float = 1.0,
     ) -> None:
         """
         Execute a complete benchmark run.
+
+        ``segment_fraction`` (default 1.0) is a multi-fidelity hook: when set
+        to a value < 1, only the first ``ceil(N * segment_fraction)`` segments
+        are processed. This lets Hyperband-style rung pruning run a trial on a
+        cheap fraction of the corpus, score it, and decide whether to
+        advance to a fuller fraction. Caller opt-in — production runs keep
+        the default of 1.0 so nothing changes for non-pruned evaluations.
 
         Raises:
             RuntimeError: if the backend fails during transcription.
@@ -79,10 +87,23 @@ class BenchmarkEngine:
 
         backend_params, preprocess_params = self._split_params(params)
 
+        # Multi-fidelity slice: deterministic prefix so different rungs
+        # measure the same audio in the same order (a key assumption the
+        # promotion decision relies on).
+        segments_all = dataset.segments
+        if segment_fraction < 1.0:
+            import math as _math
+
+            n_keep = max(1, _math.ceil(len(segments_all) * segment_fraction))
+            segments = segments_all[:n_keep]
+        else:
+            segments = segments_all
+        duration_s = sum(seg.duration_s for seg in segments)
+
         wall_start = time.perf_counter()
 
         try:
-            for seg in dataset.segments:
+            for seg in segments:
                 cache_key = self._cache.key(
                     model_local_path, params, dataset.dataset_id, seg.idx, dataset.lang
                 )
@@ -119,7 +140,7 @@ class BenchmarkEngine:
             # (LibriSpeech, CommonVoice) set this; FLEURS leaves it None so
             # WEREngine falls back to per-segment sampling. See
             # dataset_manager._fetch_hf and wer._bootstrap_wer_ci.
-            speaker_ids: list[str | None] | None = [seg.speaker_id for seg in dataset.segments]
+            speaker_ids: list[str | None] | None = [seg.speaker_id for seg in segments]
             if speaker_ids is not None and not any(sid is not None for sid in speaker_ids):
                 speaker_ids = None  # short-circuit for the fallback path
 
@@ -132,14 +153,11 @@ class BenchmarkEngine:
                 speaker_ids=speaker_ids,
             )
 
-            rtfx_mean = dataset.duration_s / wall_time if wall_time > 0 else 0.0
+            rtfx_mean = duration_s / wall_time if wall_time > 0 else 0.0
 
             # RTFx p95: use per-segment RTFx values
             seg_rtfx = np.array(
-                [
-                    seg.duration_s / e if e > 0 else 0.0
-                    for seg, e in zip(dataset.segments, seg_elapsed)
-                ]
+                [seg.duration_s / e if e > 0 else 0.0 for seg, e in zip(segments, seg_elapsed)]
             )
             rtfx_p95 = float(np.percentile(seg_rtfx, 5)) if len(seg_rtfx) > 0 else 0.0
 

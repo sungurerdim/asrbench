@@ -171,6 +171,46 @@ def is_sensitive(
     return False
 
 
+def suggest_epsilon(
+    dataset_duration_s: float,
+    *,
+    wpm: float = 150.0,
+    base_wer: float = 0.10,
+    safety: float = 2.0,
+) -> float:
+    """
+    Recommend ``eps_min`` calibrated to the WER bootstrap noise floor for
+    this corpus size.
+
+    Rationale:
+        WER is a proportion of words in error. For a corpus of N words and an
+        expected WER of p, the standard error of a fresh measurement is
+        approximately sqrt(p(1-p) / N) — same formula as any Bernoulli-like
+        proportion. Setting ``eps_min`` below this noise floor causes the
+        significance gate to fire on pure measurement noise, producing
+        phantom sensitivity verdicts during screening.
+
+        The default safety multiplier of 2 keeps a comfortable margin while
+        still allowing the optimizer to chase real improvements.
+
+    Parameters:
+        dataset_duration_s: corpus length in seconds (typically the
+            PreparedDataset cap).
+        wpm: average speech rate for the corpus language (default 150 wpm —
+            a reasonable global average across TR/EN).
+        base_wer: expected WER (default 0.10 — large Whisper-class models on
+            clean conditions).
+        safety: multiplier applied on top of the raw SE. Default 2 keeps a
+            2-sigma-like buffer.
+
+    Returns:
+        Recommended epsilon, rounded to 3 decimals.
+    """
+    n_words = max(1.0, dataset_duration_s * wpm / 60.0)
+    se = (base_wer * (1.0 - base_wer) / n_words) ** 0.5
+    return round(safety * se, 3)
+
+
 def sensitivity_score(
     baseline: TrialResult,
     min_trial: TrialResult,

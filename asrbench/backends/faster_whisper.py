@@ -46,6 +46,26 @@ _SENTINEL_NONE: dict[str, int | float] = {
     "chunk_length": 0,
 }
 
+# Params that BatchedInferencePipeline.transcribe() accepts at the signature
+# level but silently no-ops at runtime. Optimizing them wastes trials because
+# every probed value produces the same WER. Kept as the single source of truth
+# for batched-mode pruning — replaces the previous v3 YAML split.
+_BATCHED_IGNORED_PARAMS: frozenset[str] = frozenset(
+    {
+        "without_timestamps",
+        "vad_filter",
+        "vad_threshold",
+        "vad_min_speech_duration_ms",
+        "vad_max_speech_duration_s",
+        "vad_min_silence_duration_ms",
+        "vad_speech_pad_ms",
+        "condition_on_previous_text",
+        "prompt_reset_on_temperature",
+        "hallucination_silence_threshold",
+        "chunk_length",
+    }
+)
+
 
 @functools.cache
 def _whisper_transcribe_params() -> frozenset[str]:
@@ -85,6 +105,35 @@ class FasterWhisperBackend(BaseBackend):
 
     def __init__(self) -> None:
         self._model: WhisperModel | None = None
+
+    def supported_params(self, *, mode_hint: dict | None = None) -> set[str] | None:
+        """
+        Restrict the IAMS parameter space to what faster-whisper honors
+        in the current inference mode.
+
+        - Sequential (``batch_size == 0``): return None → optimizer keeps the
+          full space; signature-level filtering in transcribe() is enough.
+        - Batched (``batch_size > 0``): return BatchedInferencePipeline.transcribe()
+          signature MINUS the runtime no-ops listed in _BATCHED_IGNORED_PARAMS.
+          The optimizer then skips those params entirely, avoiding wasted trials.
+        """
+        batch_size = int((mode_hint or {}).get("batch_size", 0))
+        if batch_size <= 0:
+            return None
+        try:
+            accepted = set(_batched_transcribe_params())
+        except ImportError:
+            # faster-whisper not installed — no filtering (optimizer will fail
+            # elsewhere on first transcribe, which is the right signal).
+            return None
+        accepted -= _BATCHED_IGNORED_PARAMS
+        # batch_size itself must stay — it's how the space tells the backend
+        # to enter batched mode in the first place.
+        accepted.add(_BATCH_SIZE_KEY)
+        # Load-time params belong to the backend, not to transcribe(); keep
+        # them in the space so load() can still consume them.
+        accepted.update(_LOAD_PARAMS)
+        return accepted
 
     def default_params(self) -> dict:
         return {
