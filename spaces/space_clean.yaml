@@ -1,16 +1,51 @@
-# IAMS parameter space — CLEAN audio koşulu
+# IAMS parameter space — CLEAN audio, SEQUENTIAL mod
 #
 # Kullanım senaryosu:
 #   Temiz ses için en iyi backend parametrelerini bul.
-#   Preprocessing devre dışı — temiz sese NR/LUFS/DRC uygulamak WER'i bozar.
+#   WhisperModel.transcribe() (batch_size yok) için optimize edilmiş uzay.
+#
+#   NR/LUFS/DRC/NR gibi "restorasyon" adımları clean space'e alınmadı —
+#   temiz ses bu adımları bozar. Sadece "şekillendirme" kategorisindeki
+#   4 preproc adımı dahil edildi (notch / lowpass / limiter / pre-emph),
+#   hepsinin default'u OFF — IAMS gerçekten fayda varsa açmayı seçer.
+#
+# ── CLEAN-CORPUS PAIRING KURALI (2026-04-15) ─────────────────────────────
+#
+# LibriSpeech test-clean, TED-LIUM clean, VoxForge gibi studio-quality
+# audiobook korpuslari **SADECE bu space** ile eslenmeli — **asla**
+# space_noisy.yaml ile degil.
+#
+# Kanit (SafeScribeAI wer_results_log.jsonl phase1, 2026-04-14):
+#   LibriSpeech test-clean EN uzerinde 40 preprocessing varyasyonu
+#   test edildi:
+#     max|delta_wer_pp| = 0.281 pp
+#     noise SE (15 dk / 2250 kelime / %2 WER) = 0.291 pp
+#   → hicbir varyasyon gurultu zeminin UZERINE cikmadi. Istatistiksel
+#   olarak olcum cozunurlugumuzun altinda. FLEURS tr_tr icin ayni test
+#   max|delta| = 3.887 pp vs SE = 0.510 pp -> YES signal. Fark dile
+#   degil, kaynak kalitesine bagli.
+#
+# Pratik: optimize_matrix.json icinden "noisy-en-librispeech-*" entryleri
+# bu kural ile kaldirildi. Yeni bir clean corpus eklerken space_file
+# alanini SADECE "spaces/space_clean.yaml" yapin; ayni corpus icin
+# space_noisy.yaml ile ikinci bir study acmayin.
+#
+# Tam kanit + methodology caveats: docs/PARAM_EXCLUSIONS.md.
+#
+# NOT: Batched mod için spaces/space_clean_batched.yaml kullanın.
 #
 # Sentinel değerler (backend bu değerleri None'a çevirir = devre dışı):
 #   hallucination_silence_threshold = 0.0 → None (devre dışı)
 #   max_new_tokens                  = 0   → None (sınırsız)
 #   chunk_length                    = 0   → None (model default)
 #
-# L1 screening budget: 1 + 2×19 = 39 trial
-# Tahmini toplam (maximum mod): 75-145 trial
+# Pruning (v2): best_of, max_initial_timestamp, suppress_blank çıkarıldı —
+#   temperature=0 rejiminde / segmented audio üzerinde WER etkisi ~0.
+# Genişletme (v3): 4 şekillendirici preproc (notch/lowpass/limiter/pre-emph)
+#   eklendi — sektör standardı adımlar, default=OFF.
+#
+# L1 screening budget: 1 + 2×20 = 41 trial
+# Tahmini toplam (maximum mod): 85-155 trial
 
 parameters:
   # ── Beam / decoding ────────────────────────────────────────────────────────
@@ -21,14 +56,6 @@ parameters:
     default: 5
     max: 10
     # 1=greedy, 10=konservatif; L2 pattern search
-
-  best_of:
-    type: int
-    min: 1
-    default: 5
-    max: 5
-    # temperature>0 olduğunda sampling candidate sayısı
-    # temperature=0 iken görmezden gelinir; exhaustive (5 değer)
 
   patience:
     type: float
@@ -72,23 +99,10 @@ parameters:
     max: 5
     # 0=devre dışı; L2 exhaustive (6 değer)
 
-  suppress_blank:
-    type: bool
-    default: true
-    # Segment başında boş token bastırma; L2 exhaustive
-
   without_timestamps:
     type: bool
     default: false
     # Zaman damgası tokenleri devre dışı; bazı dillerde WER iyileştirir; L2 exhaustive
-
-  max_initial_timestamp:
-    type: float
-    min: 0.5
-    default: 1.0
-    max: 2.0
-    step: 0.25
-    # İlk token için maks timestamp; L2 exhaustive (7 değer)
 
   max_new_tokens:
     type: int
@@ -167,3 +181,52 @@ parameters:
   # Not: VAD sub-params (vad_threshold, vad_min_silence_duration_ms, vs.)
   # space_noisy.yaml'da yer alır — clean space'te vad_filter genellikle
   # insensitive çıkar ve sub-params gereksizdir.
+
+  # ── Preprocessing — şekillendirme (restorasyon değil) ─────────────────────
+  # Hepsinin default'u OFF. IAMS L1'de fayda varsa sensitive işaretler,
+  # L2 exhaustive tüm enum değerlerini tarar.
+
+  preprocess.backend:
+    type: enum
+    values: [scipy, ffmpeg]
+    default: scipy
+    # Filter backend selector (Faz 5).
+    # scipy = hızlı, signal-theory-equivalent, default.
+    # ffmpeg = byte-accurate mobile pipeline parity (FFmpeg binary gerekli,
+    # 2-5x daha yavaş). Clean space'te shaping filtrelerinin çoğu
+    # ``[ffmpeg: identical]`` olduğu için scipy genellikle yeterli;
+    # gerçek mobil deploy için ffmpeg'e geçilebilir.
+    # L2 exhaustive (2 değer); çoğu clean sette insensitive çıkar.
+
+  preprocess.notch_hz:
+    type: enum
+    values: [0, 50, 60]
+    default: 0
+    # IIR notch filter (Q=30) — mains hum removal
+    # 0=devre dışı, 50=EU/TR, 60=US/JP
+    # L2 exhaustive (3 değer); L1 sadece 0↔60 boundary test eder,
+    # 50'yi L1 kaçırabilir ama L2 tarar
+
+  preprocess.lowpass_hz:
+    type: enum
+    values: [0, 7000, 7500]
+    default: 0
+    # 4th-order Butterworth lowpass — HF noise / cihaz tıslaması
+    # 0=devre dışı, 7000=%87 Nyquist, 7500=%94 Nyquist
+    # L2 exhaustive (3 değer); 16 kHz'de 7500 Hz altı dokunulmaz
+
+  preprocess.limiter_ceiling_db:
+    type: enum
+    values: [0.0, -1.0, -3.0]
+    default: 0.0
+    # Soft tanh peak limiter (alimiter equivalent)
+    # 0.0=devre dışı, -1.0=broadcast/streaming true-peak standardı, -3.0=konservatif
+    # L2 exhaustive (3 değer); clip'li girdi ASR'a zarar verir
+
+  preprocess.preemph_coef:
+    type: enum
+    values: [0.0, 0.97]
+    default: 0.0
+    # Pre-emphasis FIR: y[n] = x[n] − α·x[n−1]
+    # 0.0=devre dışı, 0.97=klasik Kaldi/HTK/ESPnet değeri
+    # L2 exhaustive (2 değer); Whisper log-Mel pre-emph yapmıyor, yukarı akıştan ekleme

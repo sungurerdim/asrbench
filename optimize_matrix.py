@@ -12,12 +12,14 @@ Her (model, lang, dataset, condition) kombinasyonu için asrbench'in
   L7  Validation     → confidence + CV ile sertifikasyon
 
 2-aşamalı varsayılan akış (successive-halving tabanlı):
-  Stage 1  kısa dataset (15 dk) + gevşek epsilon (0.01) → kaba tarama
-  Stage 2  uzun dataset (60 dk) + sıkı epsilon (0.005) → warm-start ile
+  Stage 1  kısa dataset (15 dk) + gevşek epsilon (0.020) → kaba tarama
+           900s FLEURS-tr ~2250 kelime, WER SE ~0.63% → eps 0.020 güvenli
+  Stage 2  orta dataset (40 dk) + sıkı epsilon (0.005) → warm-start ile
            sadece sensitive parametreleri ve rafinasyonu test eder
            (prior_study_id = Stage 1 study_id). Sensitivity metadata
            taşınır; ham skorlar context mismatch nedeniyle cache'e
            yüklenmez — Stage 2 her config'i yeni datasetinde yeniden ölçer.
+           2400s ~6000 kelime, WER SE ~0.39% → eps 0.005 için 1.3x marjin.
 
 Kullanım:
     python optimize_matrix.py optimize_matrix.json
@@ -25,8 +27,8 @@ Kullanım:
     python optimize_matrix.py optimize_matrix.json --dry-run
     python optimize_matrix.py optimize_matrix.json --single-stage
     python optimize_matrix.py optimize_matrix.json \
-        --stage1-duration 900 --stage1-budget 120 --stage1-epsilon 0.01 \
-        --stage2-duration 3600 --stage2-budget 80 --stage2-epsilon 0.005
+        --stage1-duration 900 --stage1-budget 100 --stage1-epsilon 0.020 \
+        --stage2-duration 2400 --stage2-budget 60 --stage2-epsilon 0.005
 """
 
 from __future__ import annotations
@@ -41,6 +43,11 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+
+# Pure-python helpers from the library — no server round-trip needed.
+from asrbench.engine.search.budget import BudgetController
+from asrbench.engine.search.significance import suggest_epsilon
+from asrbench.engine.search.space import ParameterSpace
 
 _POLL_INTERVAL = 10  # saniye — optimizer trialler uzun sürer
 
@@ -199,6 +206,38 @@ def prefetch_all_datasets(client: httpx.Client, studies_cfg: list[dict]) -> dict
 # ---------------------------------------------------------------------------
 
 
+def _pin_preproc_backend(space_dict: dict, backend: str | None) -> dict:
+    """
+    Pin ``preprocess.backend`` inside a space dict to a fixed value.
+
+    Called when ``--preproc-backend`` is set. Rewrites (or inserts) the
+    backend slot as a single-value enum so IAMS doesn't sweep it — the
+    whole matrix runs on the chosen backend.
+
+    Returns a new dict; the input is left untouched.
+    """
+    if backend is None:
+        return space_dict
+    out = dict(space_dict)
+    params = dict(out.get("parameters", {}))
+    params["preprocess.backend"] = {
+        "type": "enum",
+        "values": [backend],
+        "default": backend,
+    }
+    out["parameters"] = params
+    return out
+
+
+def _build_objective_dict(opt_cfg: dict) -> dict[str, Any]:
+    objective_type = opt_cfg.get("objective", "wer")
+    if objective_type in ("wer", "cer", "rtfx", "vram"):
+        return {"type": "single", "metric": objective_type}
+    if objective_type == "weighted":
+        return {"type": "weighted", "weights": opt_cfg.get("weights", {"wer": 1.0})}
+    return {"type": "single", "metric": "wer"}
+
+
 def build_optimize_request(
     model_id: str,
     dataset_id: str,
@@ -207,20 +246,12 @@ def build_optimize_request(
     opt_cfg: dict,
     prior_study_id: str | None,
 ) -> dict:
-    objective_type = opt_cfg.get("objective", "wer")
-    if objective_type in ("wer", "cer", "rtfx", "vram"):
-        objective: dict[str, Any] = {"type": "single", "metric": objective_type}
-    elif objective_type == "weighted":
-        objective = {"type": "weighted", "weights": opt_cfg.get("weights", {"wer": 1.0})}
-    else:
-        objective = {"type": "single", "metric": "wer"}
-
     return {
         "model_id": model_id,
         "dataset_id": dataset_id,
         "lang": study_cfg["lang"],
         "space": space_dict,
-        "objective": objective,
+        "objective": _build_objective_dict(opt_cfg),
         "mode": opt_cfg.get("mode", "maximum"),
         "budget": {
             "hard_cap": opt_cfg.get("budget", 150),
@@ -234,6 +265,49 @@ def build_optimize_request(
         "enable_deep_ablation": opt_cfg.get("deep_ablation", False),
         "prior_study_id": prior_study_id,
     }
+
+
+def build_two_stage_request(
+    model_id: str,
+    dataset_id: str,
+    study_cfg: dict,
+    space_dict: dict,
+    opt_cfg: dict,
+    *,
+    stage1_duration: int,
+    stage2_duration: int,
+    stage1_budget: int | None,
+    stage2_budget: int | None,
+    stage1_epsilon: float | None,
+    stage2_epsilon: float | None,
+) -> dict:
+    """Build the payload for ``POST /optimize/two-stage``."""
+    body: dict[str, Any] = {
+        "model_id": model_id,
+        "dataset_id": dataset_id,
+        "lang": study_cfg["lang"],
+        "space": space_dict,
+        "objective": _build_objective_dict(opt_cfg),
+        "mode": opt_cfg.get("mode", "maximum"),
+        "stage1_duration_s": stage1_duration,
+        "stage2_duration_s": stage2_duration,
+        "top_k_pairs": opt_cfg.get("top_k_pairs", 4),
+        "multistart_candidates": opt_cfg.get("multistart_candidates", 3),
+        "validation_runs": opt_cfg.get("validation_runs", 3),
+        "enable_deep_ablation": opt_cfg.get("deep_ablation", False),
+        "use_multifidelity": opt_cfg.get("use_multifidelity", False),
+    }
+    # Only forward budgets/epsilons when explicitly set — None lets the
+    # REST handler auto-size via the library helpers.
+    if stage1_budget is not None:
+        body["stage1_budget"] = stage1_budget
+    if stage2_budget is not None:
+        body["stage2_budget"] = stage2_budget
+    if stage1_epsilon is not None:
+        body["stage1_epsilon"] = stage1_epsilon
+    if stage2_epsilon is not None:
+        body["stage2_epsilon"] = stage2_epsilon
+    return body
 
 
 def _kill_server(base_url: str) -> None:
@@ -315,6 +389,33 @@ def start_study(client: httpx.Client, request_body: dict, base_url: str = "") ->
             resp = client.post("/optimize/start", json=request_body)
     resp.raise_for_status()
     return resp.json()["study_id"]
+
+
+def start_two_stage_study(
+    client: httpx.Client, request_body: dict, base_url: str = ""
+) -> tuple[str, str]:
+    """
+    Kick off a two-stage run via ``POST /optimize/two-stage``.
+
+    Returns ``(stage1_study_id, stage2_study_id)``. Like ``start_study``, this
+    transparently recovers from a 409 (stuck running study) by restarting the
+    server and cancelling DB leftovers.
+    """
+    resp = client.post("/optimize/two-stage", json=request_body)
+    if resp.status_code == 409:
+        print(
+            "  [409] Stuck study blocking start -- restarting server"
+            " + cancelling stuck DB entries..."
+        )
+        if base_url and _restart_server(base_url):
+            with httpx.Client(base_url=base_url, timeout=60) as fresh:
+                _cancel_stuck_studies(fresh)
+                resp = fresh.post("/optimize/two-stage", json=request_body)
+        else:
+            resp = client.post("/optimize/two-stage", json=request_body)
+    resp.raise_for_status()
+    payload = resp.json()
+    return payload["stage1_study_id"], payload["stage2_study_id"]
 
 
 _PHASE_LABELS: dict[str, str] = {
@@ -718,10 +819,10 @@ def _dry_run(
 
         if two_stage:
             s1_total = _stage_estimate_for_model(
-                model_cfg, studies_cfg, int(stage1_budget or 120), stage1_duration
+                model_cfg, studies_cfg, int(stage1_budget or 100), stage1_duration
             )
             s2_total = _stage_estimate_for_model(
-                model_cfg, studies_cfg, int(stage2_budget or 80), stage2_duration
+                model_cfg, studies_cfg, int(stage2_budget or 60), stage2_duration
             )
             model_total = s1_total + s2_total
             print(
@@ -765,34 +866,397 @@ def _dry_run(
 # ---------------------------------------------------------------------------
 
 
-def _merge_opt_overrides(
-    base: dict,
+def _autosize_opt_cfg(
+    opt_cfg: dict,
+    space_dict: dict,
     *,
-    budget: int | None,
-    epsilon: float | None,
-) -> dict:
-    """Copy ``base`` and apply stage-level budget/epsilon overrides if set."""
-    merged = dict(base)
-    if budget is not None:
-        merged["budget"] = budget
-    if epsilon is not None:
-        merged["epsilon"] = epsilon
-    return merged
+    duration_s: int,
+    phase: str,  # "coarse" | "fine" | "single"
+    warm_start: bool,
+) -> tuple[dict, list[str]]:
+    """
+    Return (opt_cfg, notes) with budget / epsilon filled in when the caller
+    passed None. The library owns the math: BudgetController.suggest for trial
+    counts, suggest_epsilon for WER noise-floor calibration.
+
+    Phase semantics:
+        "coarse"  → Stage 1 / broad screening + early L2 exploration
+        "fine"    → Stage 2 / warm-start refinement
+        "single"  → single-stage (no warm-start); sized like coarse + fine
+
+    ``notes`` is a list of one-line log strings the caller can print to make
+    the auto-sizing visible in the run output.
+    """
+    out = dict(opt_cfg)
+    notes: list[str] = []
+
+    if out.get("budget") is None:
+        try:
+            space = ParameterSpace.from_dict(space_dict)
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [autosize] space parse failed ({exc}); falling back to 150")
+            out["budget"] = 150
+        else:
+            if phase == "coarse":
+                suggested = BudgetController.suggest(space, phase="coarse", warm_start=warm_start)
+            elif phase == "fine":
+                suggested = BudgetController.suggest(space, phase="fine", warm_start=warm_start)
+            else:  # single-stage: full workload, no warm start
+                suggested = BudgetController.suggest(
+                    space, phase="coarse"
+                ) + BudgetController.suggest(space, phase="fine", warm_start=True)
+            out["budget"] = int(suggested)
+            notes.append(
+                f"budget auto-sized to {out['budget']} "
+                f"(phase={phase}, N={len(space.parameters)}, warm_start={warm_start})"
+            )
+
+    if out.get("epsilon") is None:
+        eps = suggest_epsilon(float(duration_s))
+        out["epsilon"] = float(eps)
+        notes.append(f"epsilon auto-sized to {out['epsilon']} (duration={duration_s}s)")
+
+    return out, notes
 
 
-def _apply_duration_override(
+def start_global_config_study(
+    client: httpx.Client, request_body: dict, base_url: str = ""
+) -> tuple[str, str]:
+    """Kick off a global-config run via ``POST /optimize/global-config``."""
+    resp = client.post("/optimize/global-config", json=request_body)
+    if resp.status_code == 409:
+        print(
+            "  [409] Stuck study blocking start -- restarting server + "
+            "cancelling stuck DB entries..."
+        )
+        if base_url and _restart_server(base_url):
+            with httpx.Client(base_url=base_url, timeout=60) as fresh:
+                _cancel_stuck_studies(fresh)
+                resp = fresh.post("/optimize/global-config", json=request_body)
+        else:
+            resp = client.post("/optimize/global-config", json=request_body)
+    resp.raise_for_status()
+    payload = resp.json()
+    return payload["stage1_study_id"], payload["stage2_study_id"]
+
+
+def run_global_config_matrix(
+    *,
     studies_cfg: list[dict],
-    duration_override: int | None,
+    models: list[dict],
+    opt_cfg: dict,
+    client: httpx.Client,
+    ds_cache: dict[str, str],
+    base_url: str,
+    cfg_path: Path,
+    stage1_duration: int,
+    stage2_duration: int,
+    stage1_budget: int | None,
+    stage2_budget: int | None,
+    stage1_epsilon: float | None,
+    stage2_epsilon: float | None,
+    model_id_cache: dict[str, str],
+    preproc_backend: str | None = None,
+    weight_strategy: str = "duration",
 ) -> list[dict]:
-    """Return a copy of ``studies_cfg`` with ``max_duration_s`` patched to ``duration_override``."""
-    if duration_override is None:
-        return studies_cfg
-    out = []
-    for s in studies_cfg:
-        c = dict(s)
-        c["max_duration_s"] = duration_override
-        out.append(c)
-    return out
+    """
+    Run ONE IAMS study per model across every (dataset, lang) combo.
+
+    All studies in the matrix are merged into a single global-config call:
+    each IAMS trial evaluates the candidate config on every dataset and
+    aggregates the scores via MultiDatasetTrialExecutor. Produces one
+    "global" best config per model.
+
+    The matrix may contain heterogeneous space files (e.g. clean vs noisy)
+    but global-config collapses to a single run per model, so we pick the
+    WIDEST space (largest parameter set) as the optimization space. All
+    datasets must be optimizable within that single space. The chosen
+    space is logged for audit.
+    """
+    result_rows: list[dict] = []
+
+    # Pick the widest space — largest parameter count — as the optimization
+    # surface. All dataset evaluations run against it.
+    widest_study = None
+    widest_space_dict: dict[str, Any] = {}
+    widest_param_count = -1
+    for study_cfg in studies_cfg:
+        space_path = Path(study_cfg["space_file"])
+        if not space_path.exists():
+            space_path = cfg_path.parent / study_cfg["space_file"]
+        if not space_path.exists():
+            continue
+        space_dict = _load_yaml(space_path)
+        n = len(space_dict.get("parameters", {}))
+        if n > widest_param_count:
+            widest_param_count = n
+            widest_space_dict = space_dict
+            widest_study = study_cfg
+
+    if widest_study is None:
+        print("  [SKIP] no usable space file found; nothing to do", file=sys.stderr)
+        return result_rows
+
+    # Apply --preproc-backend override once for the fleet.
+    if preproc_backend is not None:
+        widest_space_dict = _pin_preproc_backend(widest_space_dict, preproc_backend)
+        widest_param_count = len(widest_space_dict.get("parameters", {}))
+
+    # Build the dataset fleet. Deduplicate by (dataset_id, lang) so a
+    # (clean, noisy) pair on the same source isn't counted twice.
+    seen: set[tuple[str, str]] = set()
+    fleet: list[dict[str, Any]] = []
+    durations: list[int] = []
+    for study_cfg in studies_cfg:
+        dataset_id = ds_cache[_ds_key(study_cfg)]
+        key = (dataset_id, study_cfg["lang"])
+        if key in seen:
+            continue
+        seen.add(key)
+        fleet.append(
+            {
+                "dataset_id": dataset_id,
+                "lang": study_cfg["lang"],
+                "label": study_cfg.get("label", "?"),
+                "duration_s": int(study_cfg.get("max_duration_s", 0)),
+            }
+        )
+        durations.append(int(study_cfg.get("max_duration_s", 0)))
+
+    # Compute per-dataset weights based on strategy.
+    if weight_strategy == "uniform":
+        weights = [1.0] * len(fleet)
+    else:  # duration-weighted
+        total = float(sum(durations)) or 1.0
+        weights = [d / total for d in durations]
+
+    print(f"  [global-config] fleet size: {len(fleet)} datasets")
+    print(f"  [global-config] optimization space: {widest_param_count} params")
+    print(f"  [global-config] weight strategy: {weight_strategy}")
+    for i, (ds, w) in enumerate(zip(fleet, weights), 1):
+        print(f"    [{i}] {ds['label']:<30}  w={w:.3f}  dur={ds['duration_s']}s")
+
+    for m_idx, model_cfg in enumerate(models, 1):
+        model_name = model_cfg["name"]
+        cached_model_id = model_id_cache.get(model_name)
+        if cached_model_id is None:
+            print(f"\n[global-config] Model {m_idx}/{len(models)}: {model_name}")
+            model_id = register_model(client, model_cfg)
+            load_model(client, model_id)
+            model_id_cache[model_name] = model_id
+        else:
+            print(f"\n[global-config] Model {m_idx}/{len(models)}: {model_name} (reusing)")
+            model_id = cached_model_id
+
+        req_body: dict[str, Any] = {
+            "model_id": model_id,
+            "datasets": [
+                {
+                    "dataset_id": ds["dataset_id"],
+                    "lang": ds["lang"],
+                    "weight": float(w),
+                }
+                for ds, w in zip(fleet, weights)
+            ],
+            "space": widest_space_dict,
+            "objective": _build_objective_dict(opt_cfg),
+            "mode": opt_cfg.get("mode", "maximum"),
+            "stage1_duration_s": stage1_duration,
+            "stage2_duration_s": stage2_duration,
+            "top_k_pairs": opt_cfg.get("top_k_pairs", 4),
+            "multistart_candidates": opt_cfg.get("multistart_candidates", 3),
+            "validation_runs": opt_cfg.get("validation_runs", 3),
+            "enable_deep_ablation": opt_cfg.get("deep_ablation", False),
+            "use_multifidelity": opt_cfg.get("use_multifidelity", False),
+        }
+        if stage1_budget is not None:
+            req_body["stage1_budget"] = stage1_budget
+        if stage2_budget is not None:
+            req_body["stage2_budget"] = stage2_budget
+        if stage1_epsilon is not None:
+            req_body["stage1_epsilon"] = stage1_epsilon
+        if stage2_epsilon is not None:
+            req_body["stage2_epsilon"] = stage2_epsilon
+
+        stage1_id, stage2_id = start_global_config_study(client, req_body, base_url=base_url)
+        print(f"  stage1: {stage1_id[:8]}...  stage2: {stage2_id[:8]}...")
+
+        final_budget = stage2_budget or 60
+        study_data = wait_study(client, stage2_id, budget=final_budget)
+        run_stats = _fetch_best_run_stats(client, study_data.get("best_run_id"))
+
+        synthetic_study_cfg = {
+            "label": f"global-{len(fleet)}ds",
+            "lang": "multi",
+            "dataset": "global",
+        }
+        row = build_result_row(model_name, synthetic_study_cfg, study_data, run_stats)
+        row["stage"] = "global"
+        row["stage1_study_id"] = stage1_id
+        row["fleet_size"] = len(fleet)
+        result_rows.append(row)
+
+        best_cfg: dict = study_data.get("best_config") or {}
+        defaults = widest_space_dict.get("parameters", {})
+        non_default = {
+            k: v
+            for k, v in best_cfg.items()
+            if str(v) != str(defaults.get(k, {}).get("default", ""))
+        }
+        if non_default:
+            cfg_str = "  ".join(f"{k}={v}" for k, v in sorted(non_default.items()))
+            print(f"  best (non-default): {cfg_str}")
+        print()
+
+    return result_rows
+
+
+def run_two_stage_matrix(
+    *,
+    studies_cfg: list[dict],
+    models: list[dict],
+    opt_cfg: dict,
+    client: httpx.Client,
+    ds_cache: dict[str, str],
+    base_url: str,
+    cfg_path: Path,
+    stage1_duration: int,
+    stage2_duration: int,
+    stage1_budget: int | None,
+    stage2_budget: int | None,
+    stage1_epsilon: float | None,
+    stage2_epsilon: float | None,
+    model_id_cache: dict[str, str],
+    preproc_backend: str | None = None,
+) -> list[dict]:
+    """
+    Run both stages per (model, study) combination via a single REST call.
+
+    Delegates all stage-2 warm-start wiring to ``POST /optimize/two-stage`` —
+    the library-level ``run_two_stage`` orchestrator decides budgets, epsilons,
+    and screening reuse. The matrix script only iterates combos and reports.
+
+    Returns a list of result rows (one per (model, study)) carrying the
+    Stage-2 outcomes, which are the final best configs.
+    """
+    result_rows: list[dict] = []
+
+    for m_idx, model_cfg in enumerate(models, 1):
+        model_name = model_cfg["name"]
+        cached_model_id = model_id_cache.get(model_name)
+        if cached_model_id is None:
+            print(f"\n[2-stage] Model {m_idx}/{len(models)}: {model_name}")
+            model_id = register_model(client, model_cfg)
+            load_model(client, model_id)
+            model_id_cache[model_name] = model_id
+        else:
+            print(f"\n[2-stage] Model {m_idx}/{len(models)}: {model_name} (reusing)")
+            model_id = cached_model_id
+
+        study_count = len(studies_cfg)
+        print(f"[2-stage] Studies for {model_name}  ({study_count} studies)\n")
+
+        for i, study_cfg in enumerate(studies_cfg, 1):
+            study_label = study_cfg.get("label") or f"study-{i}"
+            dataset_id = ds_cache[_ds_key(study_cfg)]
+
+            space_path = Path(study_cfg["space_file"])
+            if not space_path.exists():
+                space_path = cfg_path.parent / study_cfg["space_file"]
+            if not space_path.exists():
+                print(
+                    f"  [SKIP] space file not found: {study_cfg['space_file']}",
+                    file=sys.stderr,
+                )
+                continue
+
+            space_dict = _load_yaml(space_path)
+
+            batch_size: int = int(study_cfg.get("batch_size", 0))
+            if batch_size > 0:
+                space_dict.setdefault("parameters", {})["batch_size"] = {
+                    "type": "enum",
+                    "values": [batch_size],
+                    "default": batch_size,
+                }
+
+            # --preproc-backend override: pin preprocess.backend to the chosen
+            # implementation across every study in the matrix.
+            if preproc_backend is not None:
+                space_dict = _pin_preproc_backend(space_dict, preproc_backend)
+
+            param_count = len(space_dict.get("parameters", {}))
+
+            batch_tag = f"  batch={batch_size}" if batch_size > 0 else "  sequential"
+            backend_tag = f"  preproc={preproc_backend}" if preproc_backend else ""
+            print(
+                f"  [2-stage][{i}/{study_count}] [{model_name}] "
+                f"{study_label}{batch_tag}{backend_tag}"
+            )
+            print(
+                f"  space: {space_path.name}  {param_count} params  "
+                f"S1={stage1_duration}s  S2={stage2_duration}s"
+            )
+
+            params_list = list(space_dict.get("parameters", {}).keys())
+            params_preview = ", ".join(params_list[:10])
+            if len(params_list) > 10:
+                params_preview += f" ... (+{len(params_list) - 10} more)"
+            print(f"  params: {params_preview}")
+
+            req_body = build_two_stage_request(
+                model_id=model_id,
+                dataset_id=dataset_id,
+                study_cfg=study_cfg,
+                space_dict=space_dict,
+                opt_cfg=opt_cfg,
+                stage1_duration=stage1_duration,
+                stage2_duration=stage2_duration,
+                stage1_budget=stage1_budget,
+                stage2_budget=stage2_budget,
+                stage1_epsilon=stage1_epsilon,
+                stage2_epsilon=stage2_epsilon,
+            )
+
+            # Library auto-sizes budget/epsilon per stage — log the
+            # defaults the server will derive so the user can see them.
+            if stage1_budget is None or stage1_epsilon is None:
+                print(
+                    "  [autosize] Stage 1 budget/epsilon -> library "
+                    "(BudgetController.suggest + suggest_epsilon)"
+                )
+            if stage2_budget is None or stage2_epsilon is None:
+                print(
+                    "  [autosize] Stage 2 budget/epsilon -> library "
+                    "(warm-start BudgetController.suggest + suggest_epsilon)"
+                )
+
+            stage1_id, stage2_id = start_two_stage_study(client, req_body, base_url=base_url)
+            print(f"  stage1: {stage1_id[:8]}...  stage2: {stage2_id[:8]}...")
+
+            # Wait on Stage 2 — it's the final answer. Stage 1 completes
+            # silently before Stage 2 starts (single background task).
+            final_budget = stage2_budget or 60
+            study_data = wait_study(client, stage2_id, budget=final_budget)
+            run_stats = _fetch_best_run_stats(client, study_data.get("best_run_id"))
+            row = build_result_row(model_name, study_cfg, study_data, run_stats)
+            row["stage"] = "S2"
+            row["stage1_study_id"] = stage1_id
+            result_rows.append(row)
+
+            best_cfg: dict = study_data.get("best_config") or {}
+            defaults = space_dict.get("parameters", {})
+            non_default = {
+                k: v
+                for k, v in best_cfg.items()
+                if str(v) != str(defaults.get(k, {}).get("default", ""))
+            }
+            if non_default:
+                cfg_str = "  ".join(f"{k}={v}" for k, v in sorted(non_default.items()))
+                print(f"  best (non-default): {cfg_str}")
+            print()
+
+    return result_rows
 
 
 def run_stage(
@@ -808,6 +1272,7 @@ def run_stage(
     prior_study_map: dict[tuple[str, str], str] | None,
     model_id_cache: dict[str, str],
     label_to_study_id: dict[str, str],
+    phase: str = "single",
 ) -> list[dict]:
     """
     Run one optimization stage across all (model × study) combinations.
@@ -903,16 +1368,28 @@ def run_stage(
             if prior_study_id:
                 print(f"  warm-start: {prior_study_id[:8]}...")
 
+            # Per-study auto-sizing: each study may have its own space/duration,
+            # so budget and epsilon are resolved here rather than at stage level.
+            study_opt_cfg, autosize_notes = _autosize_opt_cfg(
+                opt_cfg,
+                space_dict,
+                duration_s=int(study_cfg.get("max_duration_s") or 0),
+                phase=phase,
+                warm_start=prior_study_id is not None,
+            )
+            for note in autosize_notes:
+                print(f"  [autosize] {note}")
+
             req_body = build_optimize_request(
                 model_id=model_id,
                 dataset_id=dataset_id,
                 study_cfg=study_cfg,
                 space_dict=space_dict,
-                opt_cfg=opt_cfg,
+                opt_cfg=study_opt_cfg,
                 prior_study_id=prior_study_id,
             )
 
-            budget = int(opt_cfg.get("budget", 150))
+            budget = int(study_opt_cfg.get("budget", 150))
             study_id = start_study(client, req_body, base_url=base_url)
             label_to_study_id[compound] = study_id
             print(f"  study_id: {study_id[:8]}...")
@@ -961,45 +1438,92 @@ def main() -> None:
     parser.add_argument(
         "--stage1-budget",
         type=int,
-        default=120,
-        help="Stage 1 trial budget per study (default: 120).",
+        default=None,
+        help=(
+            "Stage 1 trial budget per study. "
+            "Default: None → BudgetController.suggest(phase='coarse') per study, "
+            "which sizes L1 screening + early L2 exploration from the space size."
+        ),
     )
     parser.add_argument(
         "--stage1-epsilon",
         type=float,
-        default=0.02,
+        default=None,
         help=(
-            "Stage 1 convergence epsilon — coarse (default: 0.02). "
-            "Calibrated to the actual WER measurement noise floor at 900 s on "
-            "FLEURS-tr (~750 words → SE ~1.5%%). Setting this tighter than the "
-            "noise floor causes spurious sensitivity attributions during "
-            "screening; 0.02 keeps the AND-gate honest. See Li et al. 2018 "
-            "(Hyperband, JMLR) on resource/noise calibration and Bisani & Ney "
-            "2004 on bootstrap CI width vs. corpus size."
+            "Stage 1 convergence epsilon. "
+            "Default: None → suggest_epsilon(stage1_duration), which calibrates "
+            "to the WER noise floor at the Stage-1 corpus size. Override only "
+            "if you know your corpus WPM / base WER differ substantially from "
+            "the defaults (150 wpm, base WER 0.10)."
         ),
     )
     parser.add_argument(
         "--stage2-duration",
         type=int,
-        default=3600,
-        help="Stage 2 dataset cap in seconds (default: 3600 = 60 min).",
+        default=2400,
+        help=(
+            "Stage 2 dataset cap in seconds (default: 2400 = 40 min). "
+            "2400s ~6000 words -> WER SE ~0.39%%; epsilon 0.005 has 1.3x "
+            "margin over the noise floor, sufficient for L7 validation CI."
+        ),
     )
     parser.add_argument(
         "--stage2-budget",
         type=int,
-        default=80,
+        default=None,
         help=(
-            "Stage 2 trial budget per study (default: 80). Lower than stage 1 "
-            "because warm-start skips L1 screening."
+            "Stage 2 trial budget per study. "
+            "Default: None → BudgetController.suggest(phase='fine', warm_start=True) "
+            "per study (L2 refine + L3-L7 workload, warm-started from S1)."
         ),
     )
     parser.add_argument(
         "--stage2-epsilon",
         type=float,
-        default=0.005,
-        help="Stage 2 convergence epsilon — fine (default: 0.005).",
+        default=None,
+        help=("Stage 2 convergence epsilon. Default: None → suggest_epsilon(stage2_duration)."),
+    )
+    parser.add_argument(
+        "--preproc-backend",
+        choices=("scipy", "ffmpeg"),
+        default=None,
+        help=(
+            "Override the preprocessing backend for every study in the matrix. "
+            "scipy=fast, dependency-free (default when omitted); "
+            "ffmpeg=byte-accurate mobile pipeline parity (requires FFmpeg on PATH, "
+            "2-5x slower per trial). Writes preprocess.backend into the space "
+            "dict as an enum pinned to the chosen value."
+        ),
+    )
+    parser.add_argument(
+        "--global-config",
+        action="store_true",
+        help=(
+            "Merge all studies in the matrix into a single global-config run: "
+            "one IAMS optimization across every (dataset, lang) combo, "
+            "weighted by max_duration_s. Produces ONE config that minimizes "
+            "the aggregate WER across the fleet. Requires /optimize/global-config "
+            "REST endpoint (library-level MultiDatasetTrialExecutor)."
+        ),
+    )
+    parser.add_argument(
+        "--global-config-weights",
+        choices=("uniform", "duration"),
+        default="duration",
+        help=(
+            "How to weight datasets in --global-config mode. "
+            "'duration'=weight by max_duration_s (longer corpus = more say; "
+            "default). 'uniform'=equal weight per dataset."
+        ),
     )
     args = parser.parse_args()
+
+    if args.global_config and args.single_stage:
+        sys.exit(
+            "[ERROR] --global-config cannot be combined with --single-stage. "
+            "Global-config mode relies on the /optimize/two-stage code path "
+            "(warm-started fine refinement); drop --single-stage."
+        )
 
     cfg_path = Path(args.config)
     if not cfg_path.exists():
@@ -1013,7 +1537,12 @@ def main() -> None:
     total_studies = len(models) * len(studies_cfg)
 
     two_stage = not args.single_stage
-    mode_label = "2-STAGE (S1 coarse -> S2 refine)" if two_stage else "SINGLE-STAGE"
+    if args.global_config:
+        mode_label = "2-STAGE GLOBAL-CONFIG (one optimal preset across all datasets)"
+    elif two_stage:
+        mode_label = "2-STAGE (S1 coarse -> S2 refine)"
+    else:
+        mode_label = "SINGLE-STAGE"
 
     print(f"\n{'=' * 65}")
     print("  ASRbench IAMS Optimizer Matrix")
@@ -1025,20 +1554,31 @@ def main() -> None:
         f"  Opt:     mode={opt_cfg.get('mode', 'maximum')}  "
         f"obj={opt_cfg.get('objective', 'wer').upper()}"
     )
+    if args.preproc_backend:
+        print(f"  Preproc: backend={args.preproc_backend}  (pinned across all studies)")
+    if args.global_config:
+        print(
+            f"  Global:  weights={args.global_config_weights}  "
+            f"(one study per model, aggregated over fleet)"
+        )
+
+    def _fmt(val: object) -> str:
+        return "auto" if val is None else str(val)
+
     if two_stage:
         print(
             f"  S1:      dur={args.stage1_duration}s  "
-            f"budget={args.stage1_budget}  eps={args.stage1_epsilon}"
+            f"budget={_fmt(args.stage1_budget)}  eps={_fmt(args.stage1_epsilon)}"
         )
         print(
             f"  S2:      dur={args.stage2_duration}s  "
-            f"budget={args.stage2_budget}  eps={args.stage2_epsilon}  "
+            f"budget={_fmt(args.stage2_budget)}  eps={_fmt(args.stage2_epsilon)}  "
             f"(warm-start from S1)"
         )
     else:
         print(
             f"  Single:  dur={'(JSON)' if not opt_cfg.get('budget') else 'json'}  "
-            f"budget={opt_cfg.get('budget', 150)}  eps={opt_cfg.get('epsilon', 0.005)}"
+            f"budget={_fmt(opt_cfg.get('budget'))}  eps={_fmt(opt_cfg.get('epsilon'))}"
         )
     print(f"{'=' * 65}\n")
 
@@ -1061,81 +1601,59 @@ def main() -> None:
         sys.exit(1)
 
     with httpx.Client(base_url=base_url, timeout=60) as client:
-        # --- Dataset prefetch (fetch each unique (dataset, lang, duration) once) ----
-        print("\n[2/4] Dataset prefetch (shared across models + stages)")
-        if two_stage:
-            s1_studies = _apply_duration_override(studies_cfg, args.stage1_duration)
-            s2_studies = _apply_duration_override(studies_cfg, args.stage2_duration)
-            ds_cache = prefetch_all_datasets(client, s1_studies)
-            ds_cache.update(prefetch_all_datasets(client, s2_studies))
-        else:
-            s1_studies = studies_cfg  # unused
-            s2_studies = studies_cfg
-            ds_cache = prefetch_all_datasets(client, studies_cfg)
+        print("\n[2/3] Dataset prefetch (shared across models + stages)")
+        # The two-stage endpoint re-prepares the dataset at each stage's
+        # duration cap internally, so we only need to ensure the base
+        # dataset exists server-side once per (source, lang, split) combo.
+        ds_cache = prefetch_all_datasets(client, studies_cfg)
 
-        # --- Stage execution ----------------------------------------------------
         model_id_cache: dict[str, str] = {}
-        label_to_study_id: dict[str, str] = {}
 
-        if two_stage:
-            s1_opt = _merge_opt_overrides(
-                opt_cfg, budget=args.stage1_budget, epsilon=args.stage1_epsilon
+        if args.global_config and two_stage:
+            print(
+                "\n[3/3] global-config run (one IAMS study across all datasets, "
+                "MultiDatasetTrialExecutor)"
             )
-            s2_opt = _merge_opt_overrides(
-                opt_cfg, budget=args.stage2_budget, epsilon=args.stage2_epsilon
-            )
-
-            print("\n[3/4] Stage 1 — coarse screening on short dataset")
-            stage1_rows = run_stage(
-                stage_label="S1",
-                studies_cfg=s1_studies,
+            result_rows = run_global_config_matrix(
+                studies_cfg=studies_cfg,
                 models=models,
-                opt_cfg=s1_opt,
+                opt_cfg=opt_cfg,
                 client=client,
                 ds_cache=ds_cache,
                 base_url=base_url,
                 cfg_path=cfg_path,
-                prior_study_map=None,
+                stage1_duration=args.stage1_duration,
+                stage2_duration=args.stage2_duration,
+                stage1_budget=args.stage1_budget,
+                stage2_budget=args.stage2_budget,
+                stage1_epsilon=args.stage1_epsilon,
+                stage2_epsilon=args.stage2_epsilon,
                 model_id_cache=model_id_cache,
-                label_to_study_id=label_to_study_id,
+                preproc_backend=args.preproc_backend,
+                weight_strategy=args.global_config_weights,
             )
-
-            # Build (model, study_label) -> study_id map for completed S1 runs only.
-            # Failed / cancelled studies get NO warm-start reference; Stage 2 will
-            # re-run them from scratch rather than inherit broken screening metadata.
-            prior_map: dict[tuple[str, str], str] = {}
-            for row in stage1_rows:
-                if row.get("status") == "completed" and row.get("study_id"):
-                    prior_map[(row["model"], row["label"])] = row["study_id"]
-
-            skipped = [
-                (row["model"], row["label"])
-                for row in stage1_rows
-                if row.get("status") != "completed"
-            ]
-            if skipped:
-                print(
-                    f"\n[warn] {len(skipped)} Stage-1 studies did not complete — "
-                    f"their Stage-2 runs will start cold (no warm-start)."
-                )
-
-            print("\n[4/4] Stage 2 — fine refinement on full dataset (warm-start from S1)")
-            stage2_rows = run_stage(
-                stage_label="S2",
-                studies_cfg=s2_studies,
+        elif two_stage:
+            print("\n[3/3] 2-stage runs (coarse S1 -> warm-started S2, library-level)")
+            result_rows = run_two_stage_matrix(
+                studies_cfg=studies_cfg,
                 models=models,
-                opt_cfg=s2_opt,
+                opt_cfg=opt_cfg,
                 client=client,
                 ds_cache=ds_cache,
                 base_url=base_url,
                 cfg_path=cfg_path,
-                prior_study_map=prior_map,
+                stage1_duration=args.stage1_duration,
+                stage2_duration=args.stage2_duration,
+                stage1_budget=args.stage1_budget,
+                stage2_budget=args.stage2_budget,
+                stage1_epsilon=args.stage1_epsilon,
+                stage2_epsilon=args.stage2_epsilon,
                 model_id_cache=model_id_cache,
-                label_to_study_id=label_to_study_id,
+                preproc_backend=args.preproc_backend,
             )
-            result_rows = stage2_rows  # final = S2 outcomes; S1 kept in DB for audit
         else:
-            print("\n[3/4] Single-stage run")
+            print("\n[3/3] Single-stage run")
+            label_to_study_id: dict[str, str] = {}
             result_rows = run_stage(
                 stage_label="single",
                 studies_cfg=studies_cfg,
@@ -1148,6 +1666,7 @@ def main() -> None:
                 prior_study_map=None,
                 model_id_cache=model_id_cache,
                 label_to_study_id=label_to_study_id,
+                phase="single",
             )
 
     # Results

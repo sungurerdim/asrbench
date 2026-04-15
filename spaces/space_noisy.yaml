@@ -1,9 +1,12 @@
-# IAMS parameter space — NOISY audio koşulu
+# IAMS parameter space — NOISY audio, SEQUENTIAL mod
 #
 # Kullanım senaryosu:
 #   Gürültülü / bant sınırlı / gerçek dünya sesi için en iyi
 #   backend + preprocessing kombinasyonunu bul.
+#   WhisperModel.transcribe() (batch_size yok) için optimize edilmiş uzay.
 #   IAMS hangi preproc adımlarının gerçekten WER'i iyileştirdiğini otomatik tespit eder.
+#
+# NOT: Batched mod için spaces/space_noisy_batched.yaml kullanın.
 #
 # Sentinel değerler (backend bu değerleri None'a çevirir = devre dışı):
 #   hallucination_silence_threshold = 0.0 → None
@@ -13,8 +16,14 @@
 # NOT: preprocess.format (codec sim) bu space'te YOKTUR — degradasyon simülasyonu,
 #   restorasyon değil. Robustness testi için faster_whisper_full.yaml kullan.
 #
-# L1 screening budget: 1 + 2×30 = 61 trial
-# Tahmini toplam (maximum mod): 145-245 trial
+# Pruning (v2): best_of, max_initial_timestamp, suppress_blank çıkarıldı —
+#   temperature=0 rejiminde / segmented audio üzerinde WER etkisi ~0.
+# Genişletme (v3): 4 sektör standardı şekillendirici preproc eklendi —
+#   notch (mains hum), lowpass (HF noise), limiter (alimiter), pre-emphasis.
+#   Mevcut restorasyon adımlarıyla (NR/LUFS/HP/DRC) birlikte kapsamlı chain.
+#
+# L1 screening budget: 1 + 2×31 = 63 trial
+# Tahmini toplam (maximum mod): 150-260 trial
 
 parameters:
   # ── Beam / decoding ────────────────────────────────────────────────────────
@@ -24,12 +33,6 @@ parameters:
     min: 1
     default: 5
     max: 10
-
-  best_of:
-    type: int
-    min: 1
-    default: 5
-    max: 5
 
   patience:
     type: float
@@ -67,20 +70,9 @@ parameters:
     default: 0
     max: 5
 
-  suppress_blank:
-    type: bool
-    default: true
-
   without_timestamps:
     type: bool
     default: false
-
-  max_initial_timestamp:
-    type: float
-    min: 0.5
-    default: 1.0
-    max: 2.0
-    step: 0.25
 
   max_new_tokens:
     type: int
@@ -194,6 +186,19 @@ parameters:
 
   # ── Preprocessing — restorasyon ───────────────────────────────────────────
 
+  preprocess.backend:
+    type: enum
+    values: [scipy, ffmpeg]
+    default: scipy
+    # Filter backend selector (Faz 5).
+    # scipy = hızlı, signal-theory-equivalent, default.
+    # ffmpeg = byte-accurate mobile pipeline parity (FFmpeg binary
+    # gerekli, 2-5x daha yavaş per trial).
+    # Gürültülü setlerde loudnorm (two-pass) ve alimiter
+    # (look-ahead) için gerçek FFmpeg'i tercih edin — scipy
+    # yaklaşımı ±0.3% WER kaydırabilir.
+    # L2 exhaustive (2 değer).
+
   preprocess.noise_reduce:
     type: float
     min: 0.0
@@ -211,6 +216,33 @@ parameters:
     # EBU R128 ses seviyesi normalizasyonu; L2 exhaustive (8 değer)
     # -23=broadcast, -16=streaming standard, -14=podcast
     # Not: None (kapalı) temsil edilemiyor; min/max uçları kapalı etkisine yakın
+
+  preprocess.lufs_lra:
+    type: enum
+    values: [7, 11, 15]
+    default: 7
+    # FFmpeg loudnorm LRA target (LU). Lower = agresif DRC; 7=FFmpeg default.
+    # Sadece lufs_target aktif iken devreye girer. L2 exhaustive (3 değer);
+    # backend=scipy'de yaklaşık soft-compression, backend=ffmpeg'de tam
+    # two-pass loudnorm.
+
+  preprocess.loudnorm_linear:
+    type: bool
+    default: false
+    # Linear (single-pass gain, transient-preserving) vs dynamic
+    # (two-pass compressor). Matches FFmpeg loudnorm ``linear=true/false``.
+    # L2 exhaustive; gürültülü sette dynamic genellikle daha iyi.
+    #
+    # NOT: SafeScribeAI phase1 (2026-04-14, wer_results_log.jsonl)
+    # sadece ``lufs_target=-16`` merkezinde ölçüm yaptı → Δwer_pp=0.000
+    # 6 koşu × 3 dataset boyunca. Ama UÇ ``lufs_target`` değerlerinde
+    # (örn. -20 gürültülü TR'de +89 pp felaket) dynamic modun
+    # patladığı gözlendi — linear=true orada o trial'ı kurtarmış
+    # olabilir. Sweep'te tutuluyor ki L5 ablation gerçek ölü
+    # noktalarda bunu elimine etsin, kurtarıcı olduğu yerde de
+    # denesin. Ek caveat: ölçümler pristine asrbench default'a değil,
+    # SafeScribeAI'nin mobile_preprocessing ON + tuned transcription
+    # baseline'ına görecelidir.
 
   preprocess.highpass_hz:
     type: int
@@ -234,9 +266,64 @@ parameters:
     # Enerji tabanlı sessizlik kırpma (Silero vad_filter'dan bağımsız)
     # Segment başı/sonu sessizliklerini temizler; L2 exhaustive
 
+  preprocess.silence_threshold_db:
+    type: float
+    min: -60.0
+    default: -40.0
+    max: -30.0
+    step: 5.0
+    # Frame-RMS dBFS eşiği — altına düşen frameler silence sayılır.
+    # FFmpeg silenceremove ``threshold_db`` aynısı. vad_trim=true iken aktif.
+    # L2 exhaustive (7 değer); -50 agresif, -30 konservatif.
+
+  preprocess.silence_min_duration_s:
+    type: float
+    min: 0.3
+    default: 0.5
+    max: 2.0
+    step: 0.1
+    # Trim edilmiş segmentte tutulacak max ardışık sessizlik süresi.
+    # FFmpeg silenceremove ``duration`` aynısı. vad_trim=true iken aktif.
+    # L2 pattern search (18 değer).
+
   preprocess.sample_rate:
     type: enum
     values: [8000, 16000, 22050]
     default: 16000
     # 8000=telefon bandı simülasyonu, 16000=native (identity), 22050=referans
     # L2 exhaustive (3 değer); IAMS genellikle 16000'i optimal bulur
+
+  # ── Preprocessing — şekillendirme (sektör standardı, v3) ──────────────────
+
+  preprocess.notch_hz:
+    type: enum
+    values: [0, 50, 60]
+    default: 0
+    # IIR notch filter (Q=30) — mains hum removal
+    # 0=devre dışı, 50=EU/TR, 60=US/JP
+    # L2 exhaustive (3 değer); highpass≥85 ile ikincil ama HP kapalıyken faydalı
+
+  preprocess.lowpass_hz:
+    type: enum
+    values: [0, 7000, 7500]
+    default: 0
+    # 4th-order Butterworth lowpass — HF noise / cihaz tıslaması
+    # 0=devre dışı, 7000=%87 Nyquist, 7500=%94 Nyquist
+    # L2 exhaustive (3 değer); telefon bandı sim için preprocess.sample_rate kullanın
+
+  preprocess.limiter_ceiling_db:
+    type: enum
+    values: [0.0, -1.0, -3.0]
+    default: 0.0
+    # Soft tanh peak limiter (alimiter equivalent)
+    # LUFS + DRC sonrası clip guard — clip'li girdi ASR'a zarar verir
+    # 0.0=devre dışı, -1.0=broadcast/streaming true-peak standardı, -3.0=konservatif
+    # L2 exhaustive (3 değer)
+
+  preprocess.preemph_coef:
+    type: enum
+    values: [0.0, 0.97]
+    default: 0.0
+    # Pre-emphasis FIR: y[n] = x[n] − α·x[n−1]
+    # 0.0=devre dışı, 0.97=klasik Kaldi/HTK/ESPnet değeri
+    # L2 exhaustive (2 değer); gürültülü düşük-SNR'de WER'e %0.1-0.5 dokunabilir

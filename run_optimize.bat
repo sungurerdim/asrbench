@@ -24,23 +24,67 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [deps] Installing / verifying asrbench dependencies in 'bench'...
-pip install -e "%SCRIPT_DIR%.[faster-whisper,preprocessing]"
-if errorlevel 1 (
-    echo [ERROR] pip install failed -- see output above.
-    exit /b 1
+:: Dependency fast path. Editable installs propagate source edits without
+:: a reinstall, so the 5-10s "pip install -e" overhead per run is wasted
+:: unless pyproject.toml changed or this is a first-time setup. Force a
+:: refresh by setting ASRBENCH_REFRESH_DEPS=1 before invoking this script.
+python -c "import asrbench" 2>nul
+if errorlevel 1 set "ASRBENCH_REFRESH_DEPS=1"
+if defined ASRBENCH_REFRESH_DEPS (
+    echo [deps] Installing / refreshing asrbench dependencies in '%ASRBENCH_CONDA_ENV%'...
+    pip install -e "%SCRIPT_DIR%.[faster-whisper,preprocessing]"
+    if errorlevel 1 (
+        echo [ERROR] pip install failed -- see output above.
+        exit /b 1
+    )
+    pip show trnorm >nul 2>&1 || pip install "git+https://github.com/ysdede/trnorm.git"
+    if errorlevel 1 (
+        echo [ERROR] trnorm install failed -- Turkish WER normalization will be degraded.
+    )
+    echo [deps] OK
+) else (
+    echo [deps] asrbench already installed -- skipping ^(SET ASRBENCH_REFRESH_DEPS=1 to force^)
 )
-pip show trnorm >nul 2>&1 || pip install "git+https://github.com/ysdede/trnorm.git"
-if errorlevel 1 (
-    echo [ERROR] trnorm install failed -- Turkish WER normalization will be degraded.
-)
-echo [deps] OK
 
 echo.
-echo [mode] Default: 2-stage IAMS search (Hyperband eta=4)
-echo        S1 coarse  -> 900s dataset, budget 120, eps 0.020 (noise-floor calibrated)
-echo        S2 refine  -> 3600s dataset, budget 80,  eps 0.005 (warm-start from S1)
-echo        Override with --single-stage or --stage[12]-duration/budget/epsilon flags.
+echo [mode] Default: 2-stage IAMS search via /optimize/two-stage (library-level)
+echo        S1 coarse  -^> 900s  dataset, budget AUTO, eps AUTO  (sized per space)
+echo        S2 refine  -^> 2400s dataset, warm-start from S1's screening
+echo.
+echo [features] Always-on (Faz 1-5):
+echo        - Backend-aware filter: faster-whisper batched no-ops auto-excluded
+echo        - Quadratic refinement: analytic minimum probe after golden section
+echo        - Adaptive L2 patience: streak scales with remaining budget
+echo        - Prior-informed screening: high-leverage params probed first
+echo        - Per-stage auto budget + epsilon (library-sized from space + duration)
+echo        - Tier 1/2 preproc: silence threshold/duration + loudnorm LRA/linear
+echo.
+echo [features] Opt-in flags:
+echo        --preproc-backend=ffmpeg    byte-accurate mobile pipeline parity
+echo                                    (2-5x slower per trial, needs FFmpeg on PATH)
+echo        --global-config             one IAMS study across all datasets via
+echo                                    MultiDatasetTrialExecutor (single preset
+echo                                    for fleet deployment)
+echo        --global-config-weights=X   duration (default) ^| uniform
+echo        (edit optimize_matrix.json optimizer block for "use_multifidelity": true
+echo         -- 25-40%% wall-clock savings, risk on length-sorted datasets)
+echo.
+echo [overrides] --single-stage  --stage[12]-duration/budget/epsilon
+echo.
+
+:: ----------------------------------------------------------------------
+:: Preflight: validate matrix + print plan.
+::
+:: Parses optimize_matrix.json, verifies every referenced space_file
+:: exists, and prints a study-by-study summary grouped by
+:: clean/noisy pipeline. Fails fast if the matrix is structurally
+:: broken so we do not waste model-load time on a bad config.
+:: ----------------------------------------------------------------------
+python "%SCRIPT_DIR%scripts\preflight_matrix.py" "%SCRIPT_DIR%optimize_matrix.json"
+if errorlevel 1 (
+    echo [ERROR] Matrix preflight failed -- fix optimize_matrix.json and retry.
+    exit /b 1
+)
 echo.
 
 python "%SCRIPT_DIR%optimize_matrix.py" optimize_matrix.json %*
