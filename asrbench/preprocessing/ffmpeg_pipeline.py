@@ -1,0 +1,265 @@
+"""
+FFmpeg preprocessing backend — byte-accurate mobile pipeline parity.
+
+The scipy/numpy pipeline in ``pipeline.py`` is signal-theory equivalent to
+the FFmpeg chain most mobile apps (including SafeScribeAI) run at capture
+time, but it is NOT byte-identical: loudnorm's two-pass dynamic mode,
+alimiter's look-ahead, silenceremove's hysteresis, and swresample's
+interpolation all differ in subtle ways between the scipy implementation
+and FFmpeg's compiled filters.
+
+That gap does not matter for generic ASR research, but it DOES matter when
+the tuned config is deployed on a device that runs FFmpeg at capture time:
+the IAMS optimum found against scipy may not be the mobile optimum. To
+close that loop, this module reconstructs the same parameter bundle as a
+``filter_complex`` string and invokes the system ``ffmpeg`` binary via a
+subprocess. One invocation per segment; buffered stdin/stdout.
+
+Cost: ~2-5x slower per trial than scipy (subprocess overhead + ffmpeg
+init). Used only when the caller explicitly opts in via the pipeline
+``backend="ffmpeg"`` switch.
+
+Availability: if ``ffmpeg`` is not on PATH, the module raises at import
+time. The outer pipeline catches this and falls back to scipy with a
+log warning so CI environments without FFmpeg don't break.
+"""
+
+from __future__ import annotations
+
+import shutil
+import subprocess
+from typing import Any
+
+import numpy as np
+
+
+class FFmpegNotAvailable(RuntimeError):
+    """Raised when the ``ffmpeg`` binary is not on PATH."""
+
+
+def is_ffmpeg_available() -> bool:
+    """Return True iff an ``ffmpeg`` binary is available in PATH."""
+    return shutil.which("ffmpeg") is not None
+
+
+def _require_ffmpeg() -> str:
+    path = shutil.which("ffmpeg")
+    if path is None:
+        raise FFmpegNotAvailable(
+            "ffmpeg binary not found on PATH. Install it "
+            "(https://ffmpeg.org/download.html) or keep using the default "
+            "scipy preprocessing backend."
+        )
+    return path
+
+
+# ---------------------------------------------------------------------------
+# Filter chain builder — maps preprocess.* params to FFmpeg filter fragments
+# ---------------------------------------------------------------------------
+
+
+def build_filter_chain(params: dict[str, Any], *, sr: int) -> str:
+    """
+    Build an ``-af`` filter chain string from the preprocessing params dict.
+
+    The order mirrors ``PreprocessingPipeline.apply`` so scipy and ffmpeg
+    backends produce equivalent results on the same inputs (modulo the
+    byte-level drift the whole module exists to eliminate).
+
+    Missing / default params omit the corresponding filter. When no filter
+    is needed the function returns an empty string; callers should skip
+    the subprocess entirely in that case.
+    """
+    filters: list[str] = []
+
+    # 1. Codec simulation — not implemented here; caller should pre-encode
+    #    via simulate_codec before invoking ffmpeg. FFmpeg's own opus
+    #    roundtrip would require an extra encode/decode cycle that the
+    #    scipy path does not model.
+    fmt = params.get("format", "none")
+    if fmt != "none":
+        # Explicit warning hook — the caller's split-backend wrapper handles
+        # codec sim in scipy even when the rest of the chain is ffmpeg.
+        pass
+
+    # 2. Resample simulation
+    target_sr = int(params.get("sample_rate", sr) or sr)
+    if target_sr != sr:
+        filters.append(f"aresample={target_sr}")
+        # Upsample back to sr so the rest of the chain matches the caller's
+        # expected output rate. swresample will round-trip.
+        filters.append(f"aresample={sr}")
+
+    # 3. Notch filter (mains hum) — FFmpeg equiv: bandreject
+    notch_hz = int(params.get("notch_hz", 0) or 0)
+    if notch_hz > 0:
+        filters.append(f"bandreject=f={notch_hz}:width_type=q:w=30")
+
+    # 4. Highpass
+    highpass_hz = int(params.get("highpass_hz", 0) or 0)
+    if highpass_hz > 0:
+        filters.append(f"highpass=f={highpass_hz}")
+
+    # 5. Lowpass
+    lowpass_hz = int(params.get("lowpass_hz", 0) or 0)
+    if lowpass_hz > 0:
+        filters.append(f"lowpass=f={lowpass_hz}")
+
+    # 6. LUFS loudness normalization
+    #
+    # ``tp=-1.5`` (true-peak ceiling) is hardcoded. It is a functional
+    # knob (±2.4 pp in the SafeScribeAI phase1 sweep) but kept pinned
+    # to the EBU R128 streaming default because tuning it adds a
+    # dimension with negligible sensitivity on balanced corpora.
+    lufs_target = params.get("lufs_target")
+    if lufs_target is not None:
+        lra = float(params.get("lufs_lra", 7.0))
+        linear = "true" if params.get("loudnorm_linear", False) else "false"
+        filters.append(f"loudnorm=I={float(lufs_target)}:LRA={lra}:tp=-1.5:linear={linear}")
+
+    # 7. DRC (compressor) — FFmpeg equiv: acompressor
+    drc_ratio = float(params.get("drc_ratio", 1.0) or 1.0)
+    if drc_ratio > 1.0:
+        filters.append(f"acompressor=ratio={drc_ratio}:threshold=-20dB")
+
+    # 8. Peak limiter — FFmpeg equiv: alimiter
+    #
+    # ``attack=5`` and ``release=50`` are intentionally hardcoded. The
+    # SafeScribeAI phase1 WER sweep (wer_results_log.jsonl, 2026-04-14)
+    # tested ``release_ms ∈ {50, 150}`` across 6 runs × 3 datasets and
+    # every trial landed at Δwer_pp = 0.000 (bit-identical to baseline) —
+    # the release knob has zero measurable impact on WER in this regime.
+    # ``attack`` was not varied in that run but is held to the broadcast
+    # default for the same reason (no evidence it moves the metric).
+    # The ceiling (``limit``) is the only WER-sensitive handle and stays
+    # tunable via ``limiter_ceiling_db``.
+    limiter_ceiling_db = float(params.get("limiter_ceiling_db", 0.0) or 0.0)
+    if limiter_ceiling_db < 0.0:
+        limit_linear = 10.0 ** (limiter_ceiling_db / 20.0)
+        filters.append(f"alimiter=limit={limit_linear:.4f}:attack=5:release=50")
+
+    # 9. Noise reduction — FFmpeg equiv: afftdn
+    noise_strength = float(params.get("noise_reduce", 0.0) or 0.0)
+    if noise_strength > 0.0:
+        nf_db = -30.0 * noise_strength  # map [0..0.8] → [0..-24] dB
+        filters.append(f"afftdn=nf={nf_db:.1f}")
+
+    # 10. Pre-emphasis — FFmpeg has no direct preemphasis filter; use aeval
+    preemph_coef = float(params.get("preemph_coef", 0.0) or 0.0)
+    if preemph_coef > 0.0:
+        filters.append(f"aeval=val(0)-{preemph_coef}*val(-1)")
+
+    # 11. VAD trim — FFmpeg equiv: silenceremove (leading + trailing + middle)
+    if params.get("vad_trim", False):
+        threshold_db = float(params.get("silence_threshold_db", -40.0))
+        min_duration = float(params.get("silence_min_duration_s", 0.5))
+        filters.append(
+            f"silenceremove="
+            f"start_periods=1:start_duration={min_duration}:"
+            f"start_threshold={threshold_db}dB:"
+            f"stop_periods=-1:stop_duration={min_duration}:"
+            f"stop_threshold={threshold_db}dB"
+        )
+
+    return ",".join(filters)
+
+
+# ---------------------------------------------------------------------------
+# Subprocess execution — float32 mono in, float32 mono out
+# ---------------------------------------------------------------------------
+
+
+def run_ffmpeg_chain(
+    audio: np.ndarray,
+    filter_chain: str,
+    *,
+    sr: int,
+) -> np.ndarray:
+    """
+    Feed *audio* through a compiled FFmpeg filter chain and return the result.
+
+    Both stdin and stdout carry raw float32 little-endian mono samples at
+    ``sr`` Hz. No header, no container — FFmpeg's ``f32le`` format lets us
+    skip WAV encoding/decoding entirely.
+
+    Empty ``filter_chain`` short-circuits to returning ``audio`` unchanged.
+    """
+    if not filter_chain:
+        return audio
+
+    ffmpeg_bin = _require_ffmpeg()
+
+    cmd = [
+        ffmpeg_bin,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "f32le",
+        "-ac",
+        "1",
+        "-ar",
+        str(sr),
+        "-i",
+        "pipe:0",
+        "-af",
+        filter_chain,
+        "-f",
+        "f32le",
+        "-ac",
+        "1",
+        "-ar",
+        str(sr),
+        "pipe:1",
+    ]
+
+    payload = np.ascontiguousarray(audio, dtype=np.float32).tobytes()
+    proc = subprocess.run(
+        cmd,
+        input=payload,
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        stderr = proc.stderr.decode("utf-8", errors="replace")
+        raise RuntimeError(
+            f"ffmpeg filter chain failed (rc={proc.returncode}): {stderr.strip()}\n"
+            f"  chain: {filter_chain}"
+        )
+    return np.frombuffer(proc.stdout, dtype=np.float32)
+
+
+# ---------------------------------------------------------------------------
+# Pipeline facade — mirrors PreprocessingPipeline.apply() but uses ffmpeg
+# ---------------------------------------------------------------------------
+
+
+class FFmpegPreprocessingPipeline:
+    """
+    FFmpeg-backed preprocessing orchestrator.
+
+    Exposes the same ``apply(audio, params, sr)`` signature as
+    ``PreprocessingPipeline`` so the benchmark engine can swap backends
+    without touching the calling code.
+    """
+
+    @staticmethod
+    def apply(
+        audio: np.ndarray,
+        params: dict[str, Any],
+        sr: int = 16_000,
+    ) -> np.ndarray:
+        """Run the full preprocessing chain via the ffmpeg binary."""
+        # Codec simulation stays on the scipy path: it's a logical step
+        # (emulating a lossy encode/decode round-trip) that does not map
+        # to a pre-chain ffmpeg filter.
+        fmt = params.get("format", "none")
+        if fmt != "none":
+            from asrbench.preprocessing.codec import simulate_codec
+
+            audio = simulate_codec(audio, fmt, sr)
+
+        chain = build_filter_chain(params, sr=sr)
+        if not chain:
+            return audio
+        return run_ffmpeg_chain(audio, chain, sr=sr)

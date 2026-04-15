@@ -9,10 +9,19 @@ _THRESHOLD_DBFS = -40.0
 _MAX_SILENCE_S = 0.5
 
 
-def vad_trim(audio: np.ndarray, sr: int = 16_000) -> np.ndarray:
+def vad_trim(
+    audio: np.ndarray,
+    sr: int = 16_000,
+    *,
+    threshold_dbfs: float = _THRESHOLD_DBFS,
+    max_silence_s: float = _MAX_SILENCE_S,
+) -> np.ndarray:
     """Remove leading/trailing silence and collapse long internal pauses.
 
     Uses a simple energy-based approach with no external model dependency.
+    Mirrors the knobs of FFmpeg ``silenceremove`` so ``threshold_dbfs`` /
+    ``max_silence_s`` map to ``silenceremove_threshold_db`` /
+    ``silenceremove_duration_s`` in mobile deployments.
 
     Parameters
     ----------
@@ -20,6 +29,13 @@ def vad_trim(audio: np.ndarray, sr: int = 16_000) -> np.ndarray:
         Mono float32 waveform.
     sr:
         Sample rate of *audio*.
+    threshold_dbfs:
+        Frame RMS level (dBFS) below which a frame is classified as
+        silence. Lower (more negative) = more conservative trim. Default
+        ``-40`` dBFS.
+    max_silence_s:
+        Maximum contiguous silence (seconds) kept inside a trimmed segment.
+        Silence runs longer than this are collapsed. Default ``0.5`` s.
 
     Returns
     -------
@@ -31,8 +47,8 @@ def vad_trim(audio: np.ndarray, sr: int = 16_000) -> np.ndarray:
     if len(audio) < frame_len:
         return audio
 
-    threshold_lin = 10.0 ** (_THRESHOLD_DBFS / 20.0)
-    max_silence_frames = max(1, int(_MAX_SILENCE_S / 0.02))
+    threshold_lin = 10.0 ** (threshold_dbfs / 20.0)
+    max_silence_frames = max(1, int(max_silence_s / 0.02))
 
     n_frames = len(audio) // frame_len
     frames = audio[: n_frames * frame_len].reshape(n_frames, frame_len)
