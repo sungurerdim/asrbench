@@ -19,7 +19,7 @@ def test_default_config_creates_file(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
     # Point config path to temp dir
     config_path = tmp_path / ".asrbench" / "config.toml"
-    monkeypatch.setattr(cfg_module, "_CONFIG_PATH", config_path)
+    monkeypatch.setattr(cfg_module, "_default_config_path", lambda: config_path)
 
     config = get_config()
     get_config.cache_clear()
@@ -48,7 +48,7 @@ def test_custom_config_values(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
         encoding="utf-8",
     )
 
-    monkeypatch.setattr(cfg_module, "_CONFIG_PATH", config_path)
+    monkeypatch.setattr(cfg_module, "_default_config_path", lambda: config_path)
     config = get_config()
     get_config.cache_clear()
 

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "asrbench"
-version = "0.1.0"
+dynamic = ["version"]
 description = "ASRbench — fully local, multi-backend ASR benchmarking platform"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -23,18 +23,18 @@ classifiers = [
 ]
 
 dependencies = [
-    "fastapi>=0.115,<0.116",
-    "uvicorn[standard]>=0.34,<0.35",
-    "typer>=0.15,<0.16",
-    "duckdb>=1.2,<1.3",
-    "jiwer>=4.0,<4.1",
-    "pynvml>=11.5,<12.0",
+    "fastapi>=0.115,<1.0",
+    "uvicorn[standard]>=0.34,<1.0",
+    "typer>=0.15,<1.0",
+    "duckdb>=1.2,<2.0",
+    "jiwer>=4.0,<5.0",
+    "pynvml>=11.5,<13.0",
     "pydantic>=2.7,<3.0",
     "soundfile>=0.12,<0.13",
-    "soxr>=0.5,<0.6",
-    "datasets>=3.3,<4.0",
-    "httpx>=0.28,<0.29",
-    "whisper-normalizer>=0.1",
+    "soxr>=0.5,<1.0",
+    "datasets>=3.3,<5.0",
+    "httpx>=0.28,<1.0",
+    "whisper-normalizer>=0.1,<1.0",
 ]
 
 [project.optional-dependencies]
@@ -42,7 +42,7 @@ faster-whisper = ["faster-whisper>=1.1,<2.0"]
 whisper-cpp    = ["pywhispercpp>=1.3,<2.0"]
 parakeet       = ["nemo_toolkit[asr]>=2.2,<3.0"]
 qwen-asr       = ["transformers>=4.47,<5.0", "torch>=2.2"]
-tr             = ["trnorm>=0.1"]
+tr             = ["trnorm @ git+https://github.com/ysdede/trnorm.git", "scipy>=1.11,<2.0"]
 preprocessing  = [
     "pyloudnorm>=0.1",
     "noisereduce>=3.0,<4.0",
@@ -64,6 +64,9 @@ faster-whisper = "asrbench.backends.faster_whisper:FasterWhisperBackend"
 whisper-cpp    = "asrbench.backends.whisper_cpp:WhisperCppBackend"
 parakeet       = "asrbench.backends.parakeet:ParakeetBackend"
 qwen-asr       = "asrbench.backends.qwen_asr:QwenASRBackend"
+
+[tool.hatch.version]
+path = "asrbench/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["asrbench"]
