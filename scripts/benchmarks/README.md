@@ -11,10 +11,10 @@ Improve IAMSOptimizer.run() orchestration throughput on a 5-param convex landsca
 | File | Permission | Purpose |
 |------|-----------|---------|
 | asrbench/engine/optimizer.py | EDITABLE | Optimization target |
-| auto/bench.sh | read-only | Evaluation harness |
-| auto/eval_optimizer.py | read-only | Metric extraction |
-| auto/.autotune.json | read-only | Configuration |
-| auto/results.tsv | append-only | Experiment log |
+| scripts/benchmarks/bench.sh | read-only | Evaluation harness |
+| scripts/benchmarks/eval_optimizer.py | read-only | Metric extraction |
+| scripts/benchmarks/.autotune.json | read-only | Configuration |
+| scripts/benchmarks/results.tsv | append-only | Experiment log |
 | All other files | read-only | Keep unchanged |
 
 ## Experiment Loop
@@ -25,9 +25,9 @@ Repeat forever:
 2. Form a hypothesis. One change per experiment.
 3. Edit asrbench/engine/optimizer.py with your experimental idea.
 4. Commit: git add asrbench/engine/optimizer.py && git commit -m "description"
-5. Run: bash auto/bench.sh
-6. Read results: grep "^latency_ms:" auto/run.log
-7. Append to auto/results.tsv
+5. Run: bash scripts/benchmarks/bench.sh
+6. Read results: grep "^latency_ms:" scripts/benchmarks/run.log
+7. Append to scripts/benchmarks/results.tsv
 8. Decision:
    - latency_ms improved (lower) -> KEEP
    - latency_ms same or worse -> DISCARD (git reset HEAD~1 --hard)

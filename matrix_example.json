@@ -1,5 +1,5 @@
 {
-  "_comment": "ASRbench matrix config — kopyala, düzenle, çalıştır: python matrix_bench.py matrix.json",
+  "_comment": "ASRbench matrix config — kopyala, duzenle, calistir: asrbench bench matrix.json",
 
   "server": {
     "base_url": "http://127.0.0.1:8765"

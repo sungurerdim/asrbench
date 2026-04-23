@@ -23,6 +23,10 @@ env/
 .asrbench-env
 pyright_output.json
 
+# Benchmark/autotune runtime artifacts
+scripts/benchmarks/run.log
+scripts/benchmarks/results.tsv
+
 # Claude Code session state — never commit
 .claude/
 

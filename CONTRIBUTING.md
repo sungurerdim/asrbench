@@ -59,7 +59,22 @@ tests/
   unit/           Fast, isolated unit tests
   integration/    Tests requiring DB or backend
 docs/             Planning and reference docs
+scripts/          Developer utilities (not installed with the package)
+  preflight_matrix.py    Sanity checks for matrix.json definitions
+  benchmarks/   AutoTune evaluation harness (optimizer latency research)
+    bench.sh             Harness entry point
+    eval_optimizer.py    Metric extractor for IAMSOptimizer throughput
+    eval_wer.py          Metric extractor for WEREngine latency
+    .autotune.json       AutoTune configuration (read-only by convention)
+    README.md            Experiment loop + rules
 ```
+
+### `scripts/`
+
+`scripts/` hosts developer-facing utilities that are **not part of the installed
+package**. They are meant to be run from the repository root (`python scripts/...`
+or `bash scripts/...`). Runtime outputs such as `run.log` and `results.tsv` are
+gitignored; commit the source scripts, never the artifacts.
 
 ## Key Patterns
 

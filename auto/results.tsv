@@ -1,5 +1,0 @@
-timestamp	commit	status	latency_ms	pass_rate	duration	description
-2026-04-10T14:00:00	0873eca	keep	7.035	1.0000	00:00:10	baseline
-2026-04-10T14:10:00	48bbb59	keep	4.746	1.0000	00:00:10	defer trial list merge to _build_result
-2026-04-10T14:15:00	07f7c79	keep	2.822	1.0000	00:00:10	cache promising_points() call
-2026-04-10T14:20:00	c2034ba	discard	2.940	1.0000	00:00:10	use itertools.chain.from_iterable for trial merge

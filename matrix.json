@@ -1,15 +1,14 @@
 {
   "_comment": [
-    "ASRbench kapsamlı test matrisi.",
-    "Kullanım: bench.bat matrix.json --csv results.csv",
-    "Dry-run:  bench.bat matrix.json --dry-run",
+    "ASRbench kapsamli test matrisi.",
+    "Kullanim: asrbench bench matrix.json --csv results.csv",
+    "Dry-run:  asrbench bench matrix.json --dry-run",
     "",
     "Toplam run sayisi: 28",
     "Tahmini sure (60m audio/run, large-v3 GPU): ~4-6 saat",
     "",
     "local_path: lokalde indirildiyse tam snapshot yolunu girin,",
-    "yoksa 'large-v3' birakın (otomatik indirir).",
-    "Ornek yol: D:\\models\\huggingface\\hub\\models--Systran--faster-whisper-large-v3\\snapshots\\<hash>"
+    "yoksa 'large-v3' birakin (otomatik indirir)."
   ],
 
   "server": {
@@ -20,7 +19,7 @@
     "name": "large-v3",
     "backend": "faster-whisper",
     "family": "whisper",
-    "local_path": "D:\\models\\huggingface\\hub\\models--Systran--faster-whisper-large-v3\\snapshots\\edaa852ec7e145841d8ffdb056a99866b5f0a478"
+    "local_path": "large-v3"
   },
 
   "runs": [
