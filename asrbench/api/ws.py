@@ -1,139 +1,285 @@
-"""WebSocket progress streaming endpoints."""
+"""WebSocket progress streaming — EventBus-driven, no polling."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
+from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from asrbench.db import get_conn
+from asrbench.engine.events import get_event_bus
+from asrbench.engine.vram import get_vram_monitor
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["websocket"])
 
+_HEARTBEAT_INTERVAL_S = 30.0
+_VRAM_SNAPSHOT_INTERVAL_S = 0.5
+_TERMINAL_RUN_STATUSES: frozenset[str] = frozenset({"completed", "failed", "cancelled"})
+_TERMINAL_STUDY_STATUSES: frozenset[str] = frozenset({"completed", "failed", "cancelled"})
 
-class ConnectionManager:
-    """Track active WebSocket connections per resource."""
 
-    def __init__(self) -> None:
-        self._connections: dict[str, list[WebSocket]] = {}
+async def _safe_send(ws: WebSocket, event: dict[str, Any]) -> bool:
+    """Send ``event`` to ``ws`` and return False if the connection has dropped."""
+    try:
+        await ws.send_json(event)
+        return True
+    except Exception as exc:
+        logger.debug("WebSocket send failed, dropping connection: %s", exc)
+        return False
 
-    async def connect(self, key: str, ws: WebSocket) -> None:
-        await ws.accept()
-        self._connections.setdefault(key, []).append(ws)
 
-    def disconnect(self, key: str, ws: WebSocket) -> None:
-        conns = self._connections.get(key, [])
-        if ws in conns:
-            conns.remove(ws)
-        if not conns:
-            self._connections.pop(key, None)
+async def _subscribe_loop(
+    ws: WebSocket,
+    topic: str,
+    *,
+    initial: dict[str, Any] | None = None,
+    terminal_check: Callable[[dict[str, Any]], bool] | None = None,
+) -> None:
+    """Forward every event on ``topic`` to ``ws`` until the client disconnects.
 
-    async def broadcast(self, key: str, data: dict) -> None:
-        for ws in self._connections.get(key, []):
+    A periodic heartbeat with type="heartbeat" is sent whenever no event
+    arrives within ``_HEARTBEAT_INTERVAL_S``, which keeps intermediaries
+    (reverse proxies, dev-tunnel daemons) from closing the socket on idle.
+    If ``terminal_check`` returns True for an event, the loop cleanly exits
+    so the client doesn't sit on a dead stream.
+    """
+    bus = get_event_bus()
+    if initial is not None and not await _safe_send(ws, initial):
+        return
+
+    async with bus.subscribe(topic) as queue:
+        while True:
             try:
-                await ws.send_json(data)
-            except Exception:
-                pass
+                event = await asyncio.wait_for(queue.get(), timeout=_HEARTBEAT_INTERVAL_S)
+            except asyncio.TimeoutError:
+                if not await _safe_send(ws, {"type": "heartbeat", "topic": topic}):
+                    return
+                continue
+
+            if not await _safe_send(ws, event):
+                return
+            if terminal_check is not None and terminal_check(event):
+                return
 
 
-_manager = ConnectionManager()
+def _run_terminal(event: dict[str, Any]) -> bool:
+    return str(event.get("status", "")) in _TERMINAL_RUN_STATUSES
 
-_POLL_INTERVAL_S = 2.0
+
+def _study_terminal(event: dict[str, Any]) -> bool:
+    return str(event.get("status", "")) in _TERMINAL_STUDY_STATUSES
 
 
 @router.websocket("/ws/runs/{run_id}")
 async def ws_run_progress(ws: WebSocket, run_id: str) -> None:
-    """Stream benchmark run progress — polls DB every 2s until terminal status."""
-    await _manager.connect(f"run:{run_id}", ws)
+    """Stream benchmark run progress from the event bus."""
+    await ws.accept()
+    conn = get_conn()
+    row = conn.cursor().execute("SELECT status FROM runs WHERE run_id = ?", [run_id]).fetchone()
+    if not row:
+        await _safe_send(ws, {"type": "error", "error": f"Run '{run_id}' not found."})
+        await ws.close()
+        return
+
+    initial = {"type": "snapshot", "run_id": run_id, "status": str(row[0])}
+    if str(row[0]) in _TERMINAL_RUN_STATUSES:
+        await _safe_send(ws, initial)
+        await ws.close()
+        return
+
     try:
-        while True:
-            conn = get_conn()
-            cur = conn.cursor()
-
-            status_row = cur.execute(
-                "SELECT status FROM runs WHERE run_id = ?", [run_id]
-            ).fetchone()
-            if not status_row:
-                await ws.send_json({"error": f"Run '{run_id}' not found."})
-                break
-
-            status = str(status_row[0])
-            seg_count = cur.execute(
-                "SELECT count(*) FROM segments WHERE run_id = ?", [run_id]
-            ).fetchone()
-
-            payload = {
-                "run_id": run_id,
-                "status": status,
-                "segments_done": seg_count[0] if seg_count else 0,
-            }
-
-            # If completed, include aggregate
-            if status == "completed":
-                agg = cur.execute(
-                    "SELECT wer_mean, rtfx_mean, wall_time_s FROM aggregates WHERE run_id = ?",
-                    [run_id],
-                ).fetchone()
-                if agg:
-                    payload["wer_mean"] = agg[0]
-                    payload["rtfx_mean"] = agg[1]
-                    payload["wall_time_s"] = agg[2]
-
-            await ws.send_json(payload)
-
-            if status in ("completed", "failed"):
-                break
-
-            await asyncio.sleep(_POLL_INTERVAL_S)
+        await _subscribe_loop(
+            ws,
+            topic=f"runs:{run_id}",
+            initial=initial,
+            terminal_check=_run_terminal,
+        )
     except WebSocketDisconnect:
         pass
-    finally:
-        _manager.disconnect(f"run:{run_id}", ws)
 
 
 @router.websocket("/ws/optimize/{study_id}")
 async def ws_optimize_progress(ws: WebSocket, study_id: str) -> None:
-    """Stream optimization study progress — polls DB every 2s."""
-    await _manager.connect(f"opt:{study_id}", ws)
+    """Stream optimization study progress from the event bus."""
+    await ws.accept()
+    conn = get_conn()
+    row = (
+        conn.cursor()
+        .execute(
+            "SELECT status, total_trials, best_score FROM optimization_studies WHERE study_id = ?",
+            [study_id],
+        )
+        .fetchone()
+    )
+    if not row:
+        await _safe_send(ws, {"type": "error", "error": f"Study '{study_id}' not found."})
+        await ws.close()
+        return
+
+    initial = {
+        "type": "snapshot",
+        "study_id": study_id,
+        "status": str(row[0]),
+        "total_trials": row[1] or 0,
+        "best_score": row[2],
+    }
+    if str(row[0]) in _TERMINAL_STUDY_STATUSES:
+        await _safe_send(ws, initial)
+        await ws.close()
+        return
+
     try:
-        while True:
-            conn = get_conn()
-            cur = conn.cursor()
+        await _subscribe_loop(
+            ws,
+            topic=f"optimize:{study_id}",
+            initial=initial,
+            terminal_check=_study_terminal,
+        )
+    except WebSocketDisconnect:
+        pass
 
-            row = cur.execute(
-                "SELECT status, total_trials, best_score FROM optimization_studies "
-                "WHERE study_id = ?",
-                [study_id],
-            ).fetchone()
-            if not row:
-                await ws.send_json({"error": f"Study '{study_id}' not found."})
-                break
 
-            status = str(row[0])
-            payload = {
-                "study_id": study_id,
-                "status": status,
-                "total_trials": row[1] or 0,
-                "best_score": row[2],
-            }
+@router.websocket("/ws/datasets/{dataset_id}")
+async def ws_dataset_progress(ws: WebSocket, dataset_id: str) -> None:
+    """Stream dataset fetch progress from the event bus."""
+    await ws.accept()
+    conn = get_conn()
+    row = (
+        conn.cursor()
+        .execute(
+            "SELECT dataset_id, verified FROM datasets WHERE dataset_id = ?",
+            [dataset_id],
+        )
+        .fetchone()
+    )
+    if not row:
+        await _safe_send(ws, {"type": "error", "error": f"Dataset '{dataset_id}' not found."})
+        await ws.close()
+        return
 
-            # Count trials per phase
-            phase_rows = cur.execute(
-                "SELECT phase, count(*) FROM optimization_trials WHERE study_id = ? GROUP BY phase",
-                [study_id],
-            ).fetchall()
-            payload["phases"] = {str(p[0]): p[1] for p in phase_rows}
+    initial = {
+        "type": "snapshot",
+        "dataset_id": dataset_id,
+        "verified": bool(row[1]),
+    }
 
-            await ws.send_json(payload)
+    def _verified_terminal(event: dict[str, Any]) -> bool:
+        return bool(event.get("verified"))
 
-            if status in ("completed", "failed"):
-                break
+    try:
+        await _subscribe_loop(
+            ws,
+            topic=f"datasets:{dataset_id}",
+            initial=initial,
+            terminal_check=_verified_terminal,
+        )
+    except WebSocketDisconnect:
+        pass
 
-            await asyncio.sleep(_POLL_INTERVAL_S)
+
+@router.websocket("/ws/vram")
+async def ws_vram(ws: WebSocket) -> None:
+    """Stream periodic VRAM snapshots to any connected dashboard client.
+
+    The sampling task is shared: a single snapshot per tick is taken from
+    the VRAMMonitor singleton and broadcast to every subscriber via the
+    event bus. A disconnected client simply stops receiving events; it
+    does not stop the sampler for other clients.
+    """
+    await ws.accept()
+    sampler = _ensure_vram_sampler()
+    try:
+        await _subscribe_loop(ws, topic="vram")
     except WebSocketDisconnect:
         pass
     finally:
-        _manager.disconnect(f"opt:{study_id}", ws)
+        sampler.release()
+
+
+@router.websocket("/ws/activity")
+async def ws_activity(ws: WebSocket) -> None:
+    """Stream structured activity log lines from the event bus."""
+    await ws.accept()
+    try:
+        await _subscribe_loop(ws, topic="activity")
+    except WebSocketDisconnect:
+        pass
+
+
+# Legacy alias — early UI code subscribed to /ws/logs for the same
+# activity stream. Keep the name so existing clients keep working while
+# the UI migrates.
+@router.websocket("/ws/logs")
+async def ws_logs(ws: WebSocket) -> None:
+    await ws.accept()
+    try:
+        await _subscribe_loop(ws, topic="activity")
+    except WebSocketDisconnect:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# VRAM sampler — reference-counted background task
+# ---------------------------------------------------------------------------
+
+
+class _VRAMSampler:
+    """Single shared background task that publishes VRAM snapshots."""
+
+    def __init__(self) -> None:
+        self._task: asyncio.Task[None] | None = None
+        self._ref_count = 0
+        self._lock = asyncio.Lock()
+
+    async def acquire(self) -> None:
+        async with self._lock:
+            self._ref_count += 1
+            if self._task is None or self._task.done():
+                self._task = asyncio.create_task(self._loop())
+
+    def release(self) -> None:
+        self._ref_count -= 1
+        if self._ref_count <= 0 and self._task is not None and not self._task.done():
+            self._task.cancel()
+            self._task = None
+            self._ref_count = 0
+
+    async def _loop(self) -> None:
+        monitor = get_vram_monitor()
+        bus = get_event_bus()
+        try:
+            while True:
+                snap = monitor.snapshot()
+                await bus.publish(
+                    "vram",
+                    {
+                        "type": "vram",
+                        "available": snap.available,
+                        "used_mb": snap.used_mb,
+                        "total_mb": snap.total_mb,
+                        "free_mb": snap.free_mb,
+                        "pct": snap.pct,
+                    },
+                )
+                await asyncio.sleep(_VRAM_SNAPSHOT_INTERVAL_S)
+        except asyncio.CancelledError:
+            pass
+
+
+_vram_sampler: _VRAMSampler | None = None
+
+
+def _ensure_vram_sampler() -> _VRAMSampler:
+    global _vram_sampler
+    if _vram_sampler is None:
+        _vram_sampler = _VRAMSampler()
+    # We need to schedule acquire synchronously since the caller may not
+    # want to await; kick it off as a task so a concurrent accept isn't
+    # blocked waiting on the sampler lock.
+    asyncio.create_task(_vram_sampler.acquire())
+    return _vram_sampler

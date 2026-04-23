@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from asrbench.engine.events import get_event_bus
 from asrbench.engine.transcript_cache import TranscriptCache
 from asrbench.engine.vram import get_vram_monitor
 from asrbench.engine.wer import WEREngine
@@ -82,6 +83,10 @@ class BenchmarkEngine:
         cur = self._conn.cursor()
         cur.execute("UPDATE runs SET status = 'running' WHERE run_id = ?", [run_id])
 
+        bus = get_event_bus()
+        topic = f"runs:{run_id}"
+        await bus.publish(topic, {"type": "status", "run_id": run_id, "status": "running"})
+
         refs: list[str] = []
         hyps: list[str] = []
         seg_elapsed: list[float] = []
@@ -110,7 +115,8 @@ class BenchmarkEngine:
         vram_monitor.snapshot()
 
         try:
-            for seg in segments:
+            total_segments = len(segments)
+            for seg_index, seg in enumerate(segments, start=1):
                 cache_key = self._cache.key(
                     model_local_path, params, dataset.dataset_id, seg.idx, dataset.lang
                 )
@@ -139,6 +145,17 @@ class BenchmarkEngine:
                     "INSERT INTO segments (run_id, offset_s, duration_s, ref_text, hyp_text) "
                     "VALUES (?, ?, ?, ?, ?)",
                     [run_id, seg.offset_s, seg.duration_s, seg.ref_text, hyp_text],
+                )
+
+                await bus.publish(
+                    topic,
+                    {
+                        "type": "segment_done",
+                        "run_id": run_id,
+                        "segments_done": seg_index,
+                        "total_segments": total_segments,
+                        "elapsed_s": elapsed,
+                    },
                 )
 
             wall_time = time.perf_counter() - wall_start
@@ -197,7 +214,29 @@ class BenchmarkEngine:
             )
 
             cur.execute("UPDATE runs SET status = 'completed' WHERE run_id = ?", [run_id])
+            await bus.publish(
+                topic,
+                {
+                    "type": "complete",
+                    "run_id": run_id,
+                    "status": "completed",
+                    "wer_mean": metrics["wer"],
+                    "cer_mean": metrics["cer"],
+                    "rtfx_mean": rtfx_mean,
+                    "wall_time_s": wall_time,
+                    "vram_peak_mb": vram_peak_mb,
+                },
+            )
 
-        except Exception:
+        except Exception as exc:
             cur.execute("UPDATE runs SET status = 'failed' WHERE run_id = ?", [run_id])
+            await bus.publish(
+                topic,
+                {
+                    "type": "error",
+                    "run_id": run_id,
+                    "status": "failed",
+                    "error": str(exc),
+                },
+            )
             raise

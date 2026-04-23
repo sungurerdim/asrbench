@@ -234,7 +234,7 @@ async def delete_dataset(
     return Response(status_code=204)
 
 
-def _fetch_background(
+async def _fetch_background(
     *,
     dataset_id: str,
     source: str,
@@ -244,25 +244,46 @@ def _fetch_background(
     max_duration_s: float | None,
 ) -> None:
     """Background task: download and cache the dataset, mark as verified on success."""
+    import asyncio
+
     from asrbench.config import get_config
     from asrbench.data.dataset_manager import DatasetManager
+    from asrbench.engine.events import get_event_bus
 
     conn = get_conn()
+    bus = get_event_bus()
+    topic = f"datasets:{dataset_id}"
+
+    await bus.publish(topic, {"type": "fetch_start", "dataset_id": dataset_id})
+
     try:
         config = get_config()
         dm = DatasetManager(config, conn)
 
-        if local_path:
-            dm._fetch_local(local_path, lang)
-        else:
-            prepared = dm._fetch_hf(source, lang, split, max_duration_s)
-            cache_key = dm._cache.cache_key(source, lang, split, max_duration_s)
-            dm._cache.save(cache_key, prepared)
+        def _do_fetch() -> None:
+            if local_path:
+                dm._fetch_local(local_path, lang)
+            else:
+                prepared = dm._fetch_hf(source, lang, split, max_duration_s)
+                cache_key = dm._cache.cache_key(source, lang, split, max_duration_s)
+                dm._cache.save(cache_key, prepared)
+
+        # DatasetManager does blocking I/O — run it off the event loop so
+        # concurrent WS broadcasts and other requests keep responding.
+        await asyncio.to_thread(_do_fetch)
 
         conn.cursor().execute(
             "UPDATE datasets SET verified = true WHERE dataset_id = ?",
             [dataset_id],
         )
         logger.info("Dataset %s fetch complete", dataset_id)
+        await bus.publish(
+            topic,
+            {"type": "verified", "dataset_id": dataset_id, "verified": True},
+        )
     except Exception as exc:
         logger.error("Dataset %s fetch failed: %s", dataset_id, exc)
+        await bus.publish(
+            topic,
+            {"type": "error", "dataset_id": dataset_id, "error": str(exc)},
+        )
