@@ -2,12 +2,29 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import NoReturn
+
 import httpx
 import typer
 
 app = typer.Typer(help="Manage benchmark runs.")
 
 _DEFAULT_BASE = "http://127.0.0.1:8765"
+
+
+def _client(base_url: str) -> httpx.Client:
+    return httpx.Client(base_url=base_url, timeout=30)
+
+
+def _handle_http_error(exc: httpx.HTTPStatusError) -> NoReturn:
+    typer.echo(f"Error: {exc.response.status_code} — {exc.response.text}", err=True)
+    raise typer.Exit(code=1) from exc
+
+
+def _handle_connect_error(base_url: str) -> NoReturn:
+    typer.echo(f"Cannot connect to server at {base_url}.", err=True)
+    raise typer.Exit(code=1) from None
 
 
 @app.command("start")
@@ -105,3 +122,122 @@ def list_runs(
     typer.echo("-" * 75)
     for r in runs:
         typer.echo(f"{r['run_id']:<38} {r['backend']:<20} {r['lang']:<6} {r['status']}")
+
+
+@app.command("cancel")
+def cancel(
+    run_id: str = typer.Argument(..., help="Run UUID to cancel."),
+    base_url: str = typer.Option(_DEFAULT_BASE, "--base-url", hidden=True),
+) -> None:
+    """Request cancellation of a running run."""
+    with _client(base_url) as client:
+        try:
+            resp = client.post(f"/runs/{run_id}/cancel")
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            _handle_http_error(exc)
+        except httpx.ConnectError:
+            _handle_connect_error(base_url)
+    typer.echo(f"Cancellation requested for run {run_id}.")
+
+
+@app.command("retry")
+def retry(
+    run_id: str = typer.Argument(..., help="Run UUID to retry."),
+    base_url: str = typer.Option(_DEFAULT_BASE, "--base-url", hidden=True),
+) -> None:
+    """Re-submit a failed or cancelled run with the same parameters."""
+    with _client(base_url) as client:
+        try:
+            resp = client.post(f"/runs/{run_id}/retry")
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            _handle_http_error(exc)
+        except httpx.ConnectError:
+            _handle_connect_error(base_url)
+    data = resp.json()
+    typer.echo(f"Retry scheduled — new run {data['new_run_id']} (original: {run_id}).")
+
+
+@app.command("delete")
+def delete(
+    run_id: str = typer.Argument(..., help="Run UUID to delete."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
+    base_url: str = typer.Option(_DEFAULT_BASE, "--base-url", hidden=True),
+) -> None:
+    """Delete a run and all of its segments/aggregates."""
+    if not yes:
+        confirmed = typer.confirm(
+            f"Delete run {run_id}? This removes its segments and aggregates too."
+        )
+        if not confirmed:
+            typer.echo("Aborted.")
+            raise typer.Exit(code=0)
+    with _client(base_url) as client:
+        try:
+            resp = client.delete(f"/runs/{run_id}")
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            _handle_http_error(exc)
+        except httpx.ConnectError:
+            _handle_connect_error(base_url)
+    typer.echo(f"Deleted run {run_id}.")
+
+
+@app.command("export")
+def export(
+    run_id: str = typer.Argument(..., help="Run UUID to export."),
+    fmt: str = typer.Option("json", "--format", "-f", help="json | csv."),
+    output: Path | None = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Write to file instead of stdout.",
+    ),
+    base_url: str = typer.Option(_DEFAULT_BASE, "--base-url", hidden=True),
+) -> None:
+    """Export a run's segments and metrics as JSON or CSV."""
+    with _client(base_url) as client:
+        try:
+            resp = client.get(f"/runs/{run_id}/export", params={"fmt": fmt})
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            _handle_http_error(exc)
+        except httpx.ConnectError:
+            _handle_connect_error(base_url)
+    content = resp.content
+    if output is None:
+        typer.echo(content.decode("utf-8"))
+    else:
+        output.write_bytes(content)
+        typer.echo(f"Wrote {len(content)} bytes to {output}.")
+
+
+@app.command("segments")
+def segments(
+    run_id: str = typer.Argument(..., help="Run UUID."),
+    page: int = typer.Option(1, "--page", "-p", min=1),
+    page_size: int = typer.Option(20, "--page-size", "-s", min=1, max=1000),
+    base_url: str = typer.Option(_DEFAULT_BASE, "--base-url", hidden=True),
+) -> None:
+    """Page through a run's per-segment results."""
+    with _client(base_url) as client:
+        try:
+            resp = client.get(
+                f"/runs/{run_id}/segments",
+                params={"page": page, "page_size": page_size},
+            )
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            _handle_http_error(exc)
+        except httpx.ConnectError:
+            _handle_connect_error(base_url)
+    rows = resp.json()
+    if not rows:
+        typer.echo("No segments found on this page.")
+        return
+    typer.echo(f"{'OFFSET':<10} {'DUR':<8} REFERENCE / HYPOTHESIS")
+    typer.echo("-" * 75)
+    for r in rows:
+        typer.echo(f"{r['offset_s']:<10.2f} {r['duration_s']:<8.2f} ref: {r['ref_text']}")
+        typer.echo(f"{'':<19} hyp: {r['hyp_text']}")
