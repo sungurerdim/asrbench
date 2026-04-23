@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+import shutil
+from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Response
 from pydantic import BaseModel
 
 from asrbench.db import get_conn
@@ -12,6 +14,19 @@ from asrbench.db import get_conn
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/datasets", tags=["datasets"])
+
+_SUPPORTED_SOURCES: frozenset[str] = frozenset(
+    {
+        "common_voice",
+        "fleurs",
+        "yodas",
+        "ted_lium",
+        "librispeech",
+        "earnings22",
+        "mediaspeech",
+        "custom",
+    }
+)
 
 
 class FetchRequest(BaseModel):
@@ -25,6 +40,7 @@ class FetchRequest(BaseModel):
 class FetchResponse(BaseModel):
     dataset_id: str
     name: str
+    status: str
     stream_url: str
 
 
@@ -43,6 +59,15 @@ async def fetch_dataset(req: FetchRequest, background_tasks: BackgroundTasks) ->
     """Start fetching a dataset in the background."""
     import uuid
 
+    if req.source not in _SUPPORTED_SOURCES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Source '{req.source}' is not supported. "
+                f"Valid sources: {', '.join(sorted(_SUPPORTED_SOURCES))}."
+            ),
+        )
+
     conn = get_conn()
     cur = conn.cursor()
 
@@ -53,21 +78,20 @@ async def fetch_dataset(req: FetchRequest, background_tasks: BackgroundTasks) ->
     else:
         name = f"{req.source}_{req.lang}_{req.split}"
 
-    # Idempotent: name encodes source+lang+split+duration
     existing = cur.execute(
         "SELECT dataset_id, name FROM datasets WHERE name = ?",
         [name],
     ).fetchone()
 
     if existing:
-        dataset_id = str(existing[0])
-        return FetchResponse(
-            dataset_id=dataset_id,
-            name=name,
-            stream_url=f"/ws/datasets/{dataset_id}",
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Dataset named '{name}' already exists. "
+                "Delete it first or pick a different source/lang/split."
+            ),
         )
 
-    # Insert a pending row
     dataset_id = str(uuid.uuid4())
     cur.execute(
         "INSERT INTO datasets "
@@ -89,29 +113,35 @@ async def fetch_dataset(req: FetchRequest, background_tasks: BackgroundTasks) ->
     return FetchResponse(
         dataset_id=dataset_id,
         name=name,
-        stream_url=f"/ws/datasets/{dataset_id}",
+        status="downloading",
+        stream_url=f"/ws/logs?dataset_id={dataset_id}",
     )
 
 
 @router.get("", response_model=list[DatasetResponse])
 async def list_datasets(
     lang: str | None = Query(default=None),
+    source: str | None = Query(default=None),
 ) -> list[DatasetResponse]:
-    """List all registered datasets, optionally filtered by language."""
+    """List all registered datasets, optionally filtered by language and/or source."""
     conn = get_conn()
     cur = conn.cursor()
 
+    where: list[str] = []
+    params: list[str] = []
     if lang:
-        rows = cur.execute(
-            "SELECT dataset_id, name, lang, split, source, local_path, verified "
-            "FROM datasets WHERE lang = ? ORDER BY name",
-            [lang],
-        ).fetchall()
-    else:
-        rows = cur.execute(
-            "SELECT dataset_id, name, lang, split, source, local_path, verified "
-            "FROM datasets ORDER BY name"
-        ).fetchall()
+        where.append("lang = ?")
+        params.append(lang)
+    if source:
+        where.append("source = ?")
+        params.append(source)
+
+    sql = "SELECT dataset_id, name, lang, split, source, local_path, verified FROM datasets"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY name"
+
+    rows = cur.execute(sql, params).fetchall()
 
     return [
         DatasetResponse(
@@ -149,6 +179,59 @@ async def get_dataset(dataset_id: str) -> DatasetResponse:
         source=str(row[4]),
         verified=bool(row[6]),
     )
+
+
+@router.delete("/{dataset_id}", status_code=204)
+async def delete_dataset(
+    dataset_id: str,
+    delete_files: bool = Query(default=False),
+) -> Response:
+    """Delete a dataset row and, optionally, its cached audio files.
+
+    Returns 409 when at least one run references the dataset — delete or
+    retry those runs first to avoid orphaning them.
+    """
+    conn = get_conn()
+    cur = conn.cursor()
+
+    row = cur.execute(
+        "SELECT dataset_id, local_path FROM datasets WHERE dataset_id = ?",
+        [dataset_id],
+    ).fetchone()
+    if not row:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Dataset '{dataset_id}' not found.",
+        )
+
+    ref_count = cur.execute(
+        "SELECT count(*) FROM runs WHERE dataset_id = ?",
+        [dataset_id],
+    ).fetchone()
+    if ref_count is not None and int(ref_count[0]) > 0:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Cannot delete dataset '{dataset_id}': {int(ref_count[0])} run(s) "
+                "reference it. Delete or retry those runs first."
+            ),
+        )
+
+    if delete_files:
+        local_path = row[1]
+        if local_path:
+            path = Path(str(local_path))
+            if path.exists():
+                try:
+                    if path.is_dir():
+                        shutil.rmtree(path)
+                    else:
+                        path.unlink()
+                except OSError as exc:
+                    logger.warning("Failed to remove dataset files at %s: %s", path, exc)
+
+    cur.execute("DELETE FROM datasets WHERE dataset_id = ?", [dataset_id])
+    return Response(status_code=204)
 
 
 def _fetch_background(
