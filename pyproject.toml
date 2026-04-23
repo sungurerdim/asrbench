@@ -40,8 +40,6 @@ dependencies = [
 [project.optional-dependencies]
 faster-whisper = ["faster-whisper>=1.1,<2.0"]
 whisper-cpp    = ["pywhispercpp>=1.3,<2.0"]
-parakeet       = ["nemo_toolkit[asr]>=2.2,<3.0"]
-qwen-asr       = ["transformers>=4.47,<5.0", "torch>=2.2"]
 tr             = ["trnorm @ git+https://github.com/ysdede/trnorm.git", "scipy>=1.11,<2.0"]
 preprocessing  = [
     "pyloudnorm>=0.1",
@@ -62,8 +60,9 @@ asrbench = "asrbench.cli.app:app"
 [project.entry-points."asrbench.backends"]
 faster-whisper = "asrbench.backends.faster_whisper:FasterWhisperBackend"
 whisper-cpp    = "asrbench.backends.whisper_cpp:WhisperCppBackend"
-parakeet       = "asrbench.backends.parakeet:ParakeetBackend"
-qwen-asr       = "asrbench.backends.qwen_asr:QwenASRBackend"
+# Parakeet and Qwen-ASR ship as third-party plugin templates under
+# docs/plugins/ — they pull in very heavy deps (NeMo, PyTorch) whose CUDA
+# coupling varies by host, so they are deliberately not registered here.
 
 [tool.hatch.version]
 path = "asrbench/_version.py"
