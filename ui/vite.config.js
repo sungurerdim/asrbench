@@ -12,6 +12,7 @@ export default defineConfig({
       '/runs': 'http://localhost:8765',
       '/models': 'http://localhost:8765',
       '/datasets': 'http://localhost:8765',
+      '/optimize': 'http://localhost:8765',
       '/system': 'http://localhost:8765',
       '/ws': {
         target: 'ws://localhost:8765',

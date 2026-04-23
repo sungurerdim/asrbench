@@ -1,61 +1,165 @@
-<script>
-  import { api } from '../lib/api.js'
+<script lang="ts">
+  import { onMount } from 'svelte'
+  import { api } from '../lib/api'
+  import type { CompareResponse, Run } from '../lib/types'
 
-  let runIdsInput = $state('')
-  let result = $state(null)
-  let error = $state('')
-  let loading = $state(false)
+  let runs = $state<Run[]>([])
+  let selected = $state<Set<string>>(new Set())
+  let result = $state<CompareResponse | null>(null)
+  let error = $state<string>('')
+  let loading = $state<boolean>(false)
 
-  async function compare() {
-    loading = true
-    error = ''
+  onMount(async () => {
     try {
-      const ids = runIdsInput.split(',').map(s => s.trim()).filter(Boolean)
-      result = await api.compareRuns(ids)
+      runs = await api.listRuns({ status: 'completed', limit: 50 })
     } catch (e) {
-      error = e.message
+      error = e instanceof Error ? e.message : 'Failed to list runs'
+    }
+  })
+
+  function toggle(runId: string): void {
+    const next = new Set(selected)
+    if (next.has(runId)) {
+      next.delete(runId)
+    } else {
+      next.add(runId)
+    }
+    selected = next
+  }
+
+  async function runCompare(): Promise<void> {
+    if (selected.size < 2) {
+      error = 'Select at least 2 completed runs.'
+      return
+    }
+    error = ''
+    loading = true
+    try {
+      result = await api.compareRuns(Array.from(selected))
+    } catch (e) {
+      error = e instanceof Error ? e.message : 'Compare failed'
+      result = null
     } finally {
       loading = false
     }
   }
+
+  function fmt(value: unknown, digits = 4): string {
+    if (typeof value !== 'number') return '—'
+    return value.toFixed(digits)
+  }
+
+  function fmtDelta(value: unknown, digits = 4): string {
+    if (typeof value !== 'number') return ''
+    const sign = value > 0 ? '+' : ''
+    return `${sign}${value.toFixed(digits)}`
+  }
 </script>
 
 <h2>Compare Runs</h2>
-
-<div style="display:flex;gap:0.5rem;margin-bottom:1rem;">
-  <input bind:value={runIdsInput} placeholder="uuid1, uuid2, uuid3" style="flex:1;padding:0.5rem;background:#313244;border:1px solid #45475a;color:#cdd6f4;border-radius:4px;" />
-  <button onclick={compare} disabled={loading} style="padding:0.5rem 1rem;background:#89b4fa;color:#1e1e2e;border:none;border-radius:4px;">
-    {loading ? 'Loading…' : 'Compare'}
-  </button>
-</div>
+<p style="color:#a6adc8;font-size:0.85rem;">
+  Select two or more completed runs to see shared vs. differing parameters and
+  per-run deltas vs. the baseline (first row).
+</p>
 
 {#if error}<p style="color:#f38ba8">{error}</p>{/if}
 
-{#if result}
-  <p style="color:#6c7086;">Params differ: <strong>{result.params_diff.join(', ') || '(none)'}</strong> | Same: {result.params_same.join(', ')}</p>
-  <table style="width:100%;border-collapse:collapse;font-size:0.85rem;">
-    <thead>
-      <tr style="color:#89b4fa;text-align:left;">
-        <th>Run</th><th>WER</th><th>ΔWER</th><th>CER</th><th>RTFx</th><th>ΔRTFx</th><th>VRAM</th><th>Baseline</th>
-      </tr>
-    </thead>
-    <tbody>
-      {#each result.runs as r}
-        <tr style="border-top:1px solid #313244;{r.is_baseline?'background:#313244':''}">
-          <td style="padding:0.4rem 0;">{r.run_id.slice(0,8)}…</td>
-          <td>{r.wer_mean?.toFixed(3) ?? '—'}</td>
-          <td style="color:{r.delta_wer < 0 ? '#a6e3a1' : r.delta_wer > 0 ? '#f38ba8' : '#cdd6f4'}">
-            {r.delta_wer != null ? (r.delta_wer > 0 ? '+' : '') + r.delta_wer.toFixed(3) : '—'}
-          </td>
-          <td>{r.cer_mean?.toFixed(3) ?? '—'}</td>
-          <td>{r.rtfx_mean?.toFixed(1) ?? '—'}</td>
-          <td style="color:{r.delta_rtfx < 0 ? '#a6e3a1' : r.delta_rtfx > 0 ? '#f38ba8' : '#cdd6f4'}">
-            {r.delta_rtfx != null ? (r.delta_rtfx > 0 ? '+' : '') + r.delta_rtfx.toFixed(1) : '—'}
-          </td>
-          <td>{r.vram_peak_mb?.toFixed(0) ?? '—'} MB</td>
-          <td>{r.is_baseline ? '✓' : ''}</td>
+<section style="display:flex;gap:2rem;align-items:flex-start;margin-top:1rem;">
+  <div style="flex:1;max-width:520px;">
+    <h3>Select runs</h3>
+    <table style="width:100%;border-collapse:collapse;font-size:0.85rem;">
+      <thead>
+        <tr style="color:#89b4fa;text-align:left;">
+          <th></th><th>ID</th><th>Backend</th><th>Lang</th><th>WER</th>
         </tr>
-      {/each}
-    </tbody>
-  </table>
-{/if}
+      </thead>
+      <tbody>
+        {#each runs as run (run.run_id)}
+          <tr style="border-top:1px solid #313244;">
+            <td>
+              <input
+                type="checkbox"
+                checked={selected.has(run.run_id)}
+                onchange={() => toggle(run.run_id)}
+              />
+            </td>
+            <td style="font-family:monospace;">{run.run_id.slice(0, 8)}…</td>
+            <td>{run.backend}</td>
+            <td>{run.lang}</td>
+            <td>{fmt(run.aggregate?.wer_mean ?? null)}</td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
+    <button
+      onclick={runCompare}
+      disabled={loading || selected.size < 2}
+      style="margin-top:0.75rem;padding:0.5rem 1rem;background:#89b4fa;color:#1e1e2e;border:none;border-radius:4px;font-weight:bold;"
+    >
+      {loading ? 'Comparing…' : `Compare ${selected.size} run${selected.size === 1 ? '' : 's'}`}
+    </button>
+  </div>
+
+  <div style="flex:1;">
+    {#if result}
+      <h3>Results</h3>
+      <table style="width:100%;border-collapse:collapse;font-size:0.85rem;">
+        <thead>
+          <tr style="color:#89b4fa;text-align:left;">
+            <th>Run</th><th>WER</th><th>Δ WER</th><th>RTFx</th><th>Δ RTFx</th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each result.runs as row (row.run_id)}
+            <tr style="border-top:1px solid #313244;">
+              <td style="font-family:monospace;">
+                {row.run_id.slice(0, 8)}…{row.is_baseline ? ' ⭐' : ''}
+              </td>
+              <td>{fmt(row.aggregate.wer_mean)}</td>
+              <td style={Number(row.delta_wer_mean) < 0 ? 'color:#a6e3a1' : 'color:#f38ba8'}>
+                {fmtDelta(row.delta_wer_mean)}
+              </td>
+              <td>{fmt(row.aggregate.rtfx_mean, 2)}</td>
+              <td style={Number(row.delta_rtfx_mean) > 0 ? 'color:#a6e3a1' : 'color:#f38ba8'}>
+                {fmtDelta(row.delta_rtfx_mean, 2)}
+              </td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+
+      {#if result.params_same.length}
+        <h4 style="margin-top:1.5rem;">Shared params</h4>
+        <ul>
+          {#each result.params_same as key (key)}
+            <li>
+              <code>{key}</code> = {String(result.runs[0].params[key])}
+            </li>
+          {/each}
+        </ul>
+      {/if}
+
+      {#if result.params_diff.length}
+        <h4 style="margin-top:1rem;">Differing params</h4>
+        <ul>
+          {#each result.params_diff as key (key)}
+            <li>
+              <code>{key}</code>:
+              {result.runs.map((r) => String(r.params[key])).join(' | ')}
+            </li>
+          {/each}
+        </ul>
+      {/if}
+
+      {#if result.wilcoxon_p !== null && result.wilcoxon_p !== undefined}
+        <p style="margin-top:1rem;">
+          Wilcoxon signed-rank
+          <strong>p = {result.wilcoxon_p.toFixed(4)}</strong> —
+          {result.wilcoxon_p < 0.05 ? 'significant at p<0.05' : 'not significant'}
+        </p>
+      {/if}
+    {:else}
+      <p style="color:#a6adc8;">Pick runs on the left, then hit Compare.</p>
+    {/if}
+  </div>
+</section>
