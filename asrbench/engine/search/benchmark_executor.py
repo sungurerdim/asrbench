@@ -273,8 +273,8 @@ class BenchmarkTrialExecutor:
         cur = self.conn.cursor()
         row = cur.execute(
             """
-            SELECT wer_mean, cer_mean, mer_mean, rtfx_mean, rtfx_p95, vram_peak_mb,
-                   wall_time_s, wer_ci_lower, wer_ci_upper
+            SELECT wer_mean, cer_mean, mer_mean, wil_mean, rtfx_mean, rtfx_p95,
+                   vram_peak_mb, wall_time_s, wer_ci_lower, wer_ci_upper
             FROM aggregates WHERE run_id = ?
             """,
             [run_id],
@@ -288,13 +288,13 @@ class BenchmarkTrialExecutor:
             "wer": row[0],
             "cer": row[1],
             "mer": row[2],
-            "wil": row[2],  # WIL not tracked separately in aggregates today
-            "rtfx_mean": row[3],
-            "rtfx_p95": row[4],
-            "vram_peak_mb": row[5],
-            "wall_time_s": row[6],
-            "wer_ci_lower": row[7],
-            "wer_ci_upper": row[8],
+            "wil": row[3],
+            "rtfx_mean": row[4],
+            "rtfx_p95": row[5],
+            "vram_peak_mb": row[6],
+            "wall_time_s": row[7],
+            "wer_ci_lower": row[8],
+            "wer_ci_upper": row[9],
         }
 
     def _persist_trial(

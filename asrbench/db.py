@@ -115,6 +115,7 @@ def init_db(conn: duckdb.DuckDBPyConnection) -> None:
             wer_mean            DOUBLE,
             cer_mean            DOUBLE,
             mer_mean            DOUBLE,
+            wil_mean            DOUBLE,
             rtfx_mean           DOUBLE,
             rtfx_p95            DOUBLE,
             vram_peak_mb        DOUBLE,
@@ -125,6 +126,12 @@ def init_db(conn: duckdb.DuckDBPyConnection) -> None:
             wer_ci_upper        DOUBLE
         )
     """)
+
+    # Idempotent migration: wil_mean added in v0.2 for correct WIL aggregation.
+    try:
+        conn.execute("ALTER TABLE aggregates ADD COLUMN wil_mean DOUBLE")
+    except duckdb.CatalogException:
+        pass  # column already exists
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS optimization_studies (

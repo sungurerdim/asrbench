@@ -47,6 +47,23 @@ def _resolve_backend_cls(backend_name: str) -> type[BaseBackend]:
     )
 
 
+def _lookup_backend_family(backend_name: str) -> str:
+    """Read the ``family`` class attribute of the resolved backend, or ``""``.
+
+    We never import the backend module here — only resolve the entry point.
+    That keeps ``SubprocessBackend.__init__`` cheap (and importable even when
+    heavy backend deps like torch are missing), while still giving callers a
+    meaningful ``family`` string for logging and DB persistence.
+    """
+    try:
+        cls = _resolve_backend_cls(backend_name)
+        family = getattr(cls, "family", "")
+        return str(family) if family else ""
+    except Exception as exc:
+        logger.debug("family lookup for %r failed: %s", backend_name, exc)
+        return ""
+
+
 def _worker(backend_name: str, child_conn: Connection) -> None:
     """
     Child process event loop.
@@ -143,7 +160,7 @@ class SubprocessBackend(BaseBackend):
     """
 
     def __init__(self, backend_name: str, *, timeout_s: float = _DEFAULT_TIMEOUT_S) -> None:
-        self.family = ""
+        self.family = _lookup_backend_family(backend_name)
         self.name = f"subprocess:{backend_name}"
         self._backend_name = backend_name
         self._timeout_s = timeout_s

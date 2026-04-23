@@ -204,9 +204,16 @@ class WEREngine:
                        per-segment bootstrap is used as a fallback.
 
         Returns dict with keys:
-            wer, cer, mer, wil, wer_ci_lower, wer_ci_upper,
-            wilcoxon_p, data_leakage_warning, lang_notes, ci_method
+            wer, cer, mer, wil, wer_ci_lower, wer_ci_upper, wer_ci_method,
+            data_leakage_warning, lang_notes
         Raises ValueError if len(refs) != len(hyps) or refs is empty.
+
+        Note: pairwise significance testing (Wilcoxon signed-rank on
+        per-segment WER distributions) lives in ``CompareEngine`` so that
+        two concrete runs can be compared against each other. The earlier
+        single-run ``wilcoxon_p`` field compared a run's per-segment WER
+        against a list of zeros, which is not a meaningful test and has
+        been removed.
         """
         if len(refs) != len(hyps):
             raise ValueError(
@@ -229,7 +236,6 @@ class WEREngine:
         wer_out = process_words(norm_refs, norm_hyps)
         cer_out = process_characters(norm_refs, norm_hyps)
 
-        wilcoxon_p = self._wilcoxon(wer_out) if len(refs) >= 100 else None
         leakage = self._check_leakage(model_family, dataset_source)
         ci_lower, ci_upper, ci_method = self._bootstrap_wer_ci(wer_out, speaker_ids=speaker_ids)
 
@@ -241,7 +247,6 @@ class WEREngine:
             "wer_ci_lower": ci_lower,
             "wer_ci_upper": ci_upper,
             "wer_ci_method": ci_method,
-            "wilcoxon_p": wilcoxon_p,
             "data_leakage_warning": leakage,
             "lang_notes": get_lang_notes(lang),
         }
@@ -365,23 +370,6 @@ class WEREngine:
 
         lo, hi = np.percentile(boot_wers, [2.5, 97.5])
         return (float(lo), float(hi), "per_segment")
-
-    def _wilcoxon(self, wer_out: Any) -> float | None:
-        """Wilcoxon signed-rank test on per-segment WER. Returns p-value or None on failure."""
-        try:
-            from scipy.stats import wilcoxon
-
-            # Extract per-segment WER from existing alignment data
-            seg_wers = []
-            for alignment, ref_tokens in zip(wer_out.alignments, wer_out.references):
-                n_ref = max(len(ref_tokens), 1)
-                errors = sum(1 for chunk in alignment if chunk.type != "equal")
-                seg_wers.append(errors / n_ref)
-            seg_zeros = [0.0] * len(seg_wers)
-            result = wilcoxon(seg_zeros, seg_wers, zero_method="wilcox")
-            return float(result[1])  # type: ignore[arg-type]  # WilcoxonResult[1] == p-value
-        except Exception:
-            return None
 
     def _check_leakage(self, model_family: str | None, dataset_source: str | None) -> bool:
         if model_family is None or dataset_source is None:

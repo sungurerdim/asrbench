@@ -7,6 +7,9 @@ import logging
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from asrbench import __version__
+from asrbench.engine.vram import get_vram_monitor
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/system", tags=["system"])
@@ -33,35 +36,35 @@ class VRAMResponse(BaseModel):
 @router.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
     """Liveness probe — always returns ok."""
-    return HealthResponse(status="ok", version="0.1.0")
+    return HealthResponse(status="ok", version=__version__)
 
 
 @router.get("/vram", response_model=VRAMResponse)
 async def vram() -> VRAMResponse:
     """Report GPU VRAM usage. Returns empty list if no GPU is available."""
-    try:
-        import pynvml
-
-        pynvml.nvmlInit()
-        count = pynvml.nvmlDeviceGetCount()
-        gpus: list[GPUInfo] = []
-        for i in range(count):
-            handle = pynvml.nvmlDeviceGetHandleByIndex(i)
-            name = pynvml.nvmlDeviceGetName(handle)
-            if isinstance(name, bytes):
-                name = name.decode("utf-8")
-            mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
-            gpus.append(
-                GPUInfo(
-                    index=i,
-                    name=name,
-                    vram_used_mb=float(mem.used) / 1024 / 1024,
-                    vram_total_mb=float(mem.total) / 1024 / 1024,
-                    vram_free_mb=float(mem.free) / 1024 / 1024,
-                )
-            )
-        pynvml.nvmlShutdown()
-        return VRAMResponse(gpu_available=True, gpus=gpus)
-    except Exception as exc:
-        logger.debug("VRAM query failed (no GPU?): %s", exc)
+    monitor = get_vram_monitor()
+    snap = monitor.snapshot()
+    if not snap.available:
         return VRAMResponse(gpu_available=False, gpus=[])
+
+    name = "GPU 0"
+    try:
+        raw = monitor._pynvml.nvmlDeviceGetName(monitor._handle)  # type: ignore[union-attr]
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        name = str(raw)
+    except Exception as exc:
+        logger.debug("nvmlDeviceGetName failed: %s", exc)
+
+    return VRAMResponse(
+        gpu_available=True,
+        gpus=[
+            GPUInfo(
+                index=0,
+                name=name,
+                vram_used_mb=snap.used_mb,
+                vram_total_mb=snap.total_mb,
+                vram_free_mb=snap.free_mb,
+            )
+        ],
+    )

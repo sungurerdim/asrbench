@@ -1,23 +1,10 @@
-"""Unit tests for MatrixBuilder — cartesian product and baseline ordering.
-
-Skipped: the MatrixBuilder class was removed in the engine refactor that
-replaced the ad-hoc matrix with the IAMS optimizer's ParameterSpace. These
-tests are retained as a historical reference but no longer collect — delete
-the file once the replacement coverage in ``test_search_space.py`` and
-``test_iams_optimizer.py`` is audited to fully supersede it.
-"""
+"""Unit tests for MatrixBuilder — cartesian product and baseline ordering."""
 
 from __future__ import annotations
 
 import pytest
 
-pytest.skip(
-    "MatrixBuilder was removed; coverage now lives in test_search_space.py and "
-    "test_iams_optimizer.py — see module docstring.",
-    allow_module_level=True,
-)
-
-from asrbench.engine.matrix import MatrixBuilder  # type: ignore[attr-defined]  # noqa: E402
+from asrbench.engine.matrix import MatrixBuilder
 
 
 @pytest.fixture

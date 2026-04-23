@@ -83,6 +83,7 @@ class AudioCache:
                     ref_text=s["ref_text"],
                     offset_s=s["offset_s"],
                     duration_s=s["duration_s"],
+                    speaker_id=s.get("speaker_id"),
                 )
             )
 
@@ -111,6 +112,7 @@ class AudioCache:
                     "ref_text": s.ref_text,
                     "offset_s": s.offset_s,
                     "duration_s": s.duration_s,
+                    "speaker_id": s.speaker_id,
                 }
                 for s in dataset.segments
             ]

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from asrbench.engine.transcript_cache import TranscriptCache
+from asrbench.engine.vram import get_vram_monitor
 from asrbench.engine.wer import WEREngine
 from asrbench.preprocessing.pipeline import PreprocessingPipeline
 
@@ -102,6 +103,12 @@ class BenchmarkEngine:
 
         wall_start = time.perf_counter()
 
+        vram_monitor = get_vram_monitor()
+        vram_monitor.reset_peak()
+        # Take an initial reading so the peak includes pre-run allocations
+        # (model weights already resident in VRAM when the run starts).
+        vram_monitor.snapshot()
+
         try:
             for seg in segments:
                 cache_key = self._cache.key(
@@ -122,6 +129,7 @@ class BenchmarkEngine:
 
                     hyp_text = " ".join(s.hyp_text for s in result_segs).strip()
                     self._cache.save(cache_key, hyp_text, elapsed)
+                    vram_monitor.snapshot()
 
                 refs.append(seg.ref_text)
                 hyps.append(hyp_text)
@@ -163,20 +171,23 @@ class BenchmarkEngine:
 
             word_count = sum(len(r.split()) for r in refs)
 
+            vram_peak_mb = vram_monitor.peak_mb if vram_monitor.peak_mb > 0 else None
+
             cur.execute(
                 "INSERT INTO aggregates "
-                "(run_id, wer_mean, cer_mean, mer_mean, rtfx_mean, rtfx_p95, "
-                "vram_peak_mb, wall_time_s, word_count, data_leakage_warning, "
-                "wer_ci_lower, wer_ci_upper) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "(run_id, wer_mean, cer_mean, mer_mean, wil_mean, "
+                "rtfx_mean, rtfx_p95, vram_peak_mb, wall_time_s, word_count, "
+                "data_leakage_warning, wer_ci_lower, wer_ci_upper) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     run_id,
                     metrics["wer"],
                     metrics["cer"],
                     metrics["mer"],
+                    metrics["wil"],
                     rtfx_mean,
                     rtfx_p95,
-                    None,  # vram_peak_mb — populated by VRAMMonitor if available
+                    vram_peak_mb,
                     wall_time,
                     word_count,
                     metrics["data_leakage_warning"],

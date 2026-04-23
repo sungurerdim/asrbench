@@ -222,11 +222,18 @@ class TestEdgeCases:
             "wil",
             "wer_ci_lower",
             "wer_ci_upper",
-            "wilcoxon_p",
+            "wer_ci_method",
             "data_leakage_warning",
         ):
             assert key in result
 
-    def test_wilcoxon_none_for_small_sample(self, engine: WEREngine) -> None:
+    def test_wilcoxon_removed_from_single_run_response(self, engine: WEREngine) -> None:
+        """The broken single-run wilcoxon_p field was removed in v0.2.
+
+        Pairwise Wilcoxon comparison moved to CompareEngine so that two concrete
+        runs can be compared against each other (the earlier implementation
+        compared one run's per-segment WER against zeros, which is not a
+        meaningful statistical test).
+        """
         result = engine.compute(["hello world"], ["hello world"], lang="en")
-        assert result["wilcoxon_p"] is None
+        assert "wilcoxon_p" not in result
