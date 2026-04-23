@@ -25,6 +25,20 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 # Paths exempt from rate limiting (exact match after stripping trailing slash).
 _EXEMPT_PATHS = frozenset({"/system/health", "/system/vram"})
 
+# Path prefixes exempt from rate limiting. The UI polls /runs/<id> and
+# /optimize/<id> while a job is in flight to refresh the detail pane; the
+# default 120 req/min bucket would trip on any moderately active dashboard
+# and return 429s that the user would never be able to fix from the UI.
+_EXEMPT_PREFIXES: tuple[str, ...] = ("/runs/", "/optimize/")
+
+
+def _is_exempt_prefix(path: str) -> bool:
+    """Return True when ``path`` falls under a polling-exempt prefix."""
+    for prefix in _EXEMPT_PREFIXES:
+        if path.startswith(prefix):
+            return True
+    return False
+
 
 @dataclass
 class _Bucket:
@@ -71,7 +85,7 @@ class RateLimitMiddleware:
             return
 
         path = scope.get("path", "").rstrip("/")
-        if path in _EXEMPT_PATHS:
+        if path in _EXEMPT_PATHS or _is_exempt_prefix(path):
             await self.app(scope, receive, send)
             return
 

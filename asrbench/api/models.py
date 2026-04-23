@@ -9,6 +9,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from asrbench.api.validators import LocalPath
 from asrbench.db import get_conn
 
 logger = logging.getLogger(__name__)
@@ -23,7 +24,7 @@ class RegisterRequest(BaseModel):
     family: str
     name: str
     backend: str
-    local_path: str
+    local_path: LocalPath
     default_params: dict | None = None
 
 

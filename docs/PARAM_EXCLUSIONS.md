@@ -6,7 +6,7 @@ Sonra "neden bu parametre uzaya alinmadi?" sorusu gelirse cevap buradadir.
 
 ## ⚠ Baseline Metodoloji Uyarisi
 
-**Onemli:** Bu dokumandaki tum Δwer_pp olcumleri **SafeScribeAI'nin tuned
+**Onemli:** Bu dokumandaki tum Δwer_pp olcumleri **an upstream sweep'nin tuned
 baseline'ina** gorecelidir — yani `mobile_preprocessing` AKTIF + custom
 transcription parametreleri (vad_filter=true, condition_on_previous_text=false,
 log_prob_threshold=-0.8 vb.). **Pristine asrbench default'una gore DEGIL.**
@@ -25,7 +25,7 @@ Bu dokumandaki exclusion'lar bu yuzden **muhafazakar** tutuluyor: sadece
 oldu; tek merkezden olculenler (bkz. loudnorm_linear) **RESTORED** olarak
 sweep'te.
 
-Kaynak logu: **SafeScribeAI/scripts/wer_results_log.jsonl**, phase1_s1
+Kaynak logu: **&lt;upstream-sweep&gt;/wer_results_log.jsonl**, phase1_s1
 sweep, 2026-04-14 07:17 itibariyle. Sweep rejimi:
 
 - **Modeller:** Systran/faster-whisper-large-v3 (fp16, batch=1, temp=0.0)
@@ -85,7 +85,7 @@ limiter_release    150    tr    MediaSpeech TR           0.10198   0.000    0.10
 
 **Yorum:** alimiter `release` parametresi zaten asrbench parametre uzayinda
 tunable degildi; `ffmpeg_pipeline.py` satir ~124'de `attack=5:release=50`
-olarak hardcoded. SafeScribeAI phase1 bu varsayimi 50 ms vs 150 ms
+olarak hardcoded. an upstream sweep phase1 bu varsayimi 50 ms vs 150 ms
 karsilastirmasiyla dogruladi; 6 kosuda sinyal yok. Kod icinde neden
 hardcoded tuttugumuzu hatirlamak icin yorum eklendi.
 
@@ -144,7 +144,7 @@ IAMS matrix'inde **yalnizca `space_clean.yaml` ile** eslenmeli; asla
 
 ### Kanit
 
-SafeScribeAI phase1 sweep, 40 preprocessing varyasyonu × 3 dataset:
+an upstream sweep phase1 sweep, 40 preprocessing varyasyonu × 3 dataset:
 
 | Dataset | base WER% | max\|Δ\| | noise SE* | signal? |
 |---|---|---|---|---|
@@ -190,7 +190,7 @@ olarak degil.
 
 ### Caveat
 
-Bu olcum SafeScribeAI'nin tuned baseline'ina gore yapildi (bkz. yukaridaki
+Bu olcum an upstream sweep'nin tuned baseline'ina gore yapildi (bkz. yukaridaki
 Baseline Metodoloji Uyarisi). Pristine baseline ile yeniden olculurse
 deltalar biraz buyuyebilir ama noise-floor argumani dayaniklidir: ~%2 WER
 × 2250 kelime her durumda ~0.3 pp SE verir, yani preprocessing efektleri
@@ -199,7 +199,7 @@ istatistiksel alt sinir.
 
 ## Test Edilmeyen Ama Extreme-Tail Adayi Parametreler
 
-SafeScribeAI phase1 sadece 10 parametreyi test etti. Asagidaki asrbench
+an upstream sweep phase1 sadece 10 parametreyi test etti. Asagidaki asrbench
 parametreleri hic test edilmedi ve range narrowing icin kanit yok:
 
 - `beam_size`, `temperature`, `patience`, `repetition_penalty`,
@@ -220,7 +220,7 @@ calistirilmalidir.
 
 ## Referanslar
 
-- `SafeScribeAI/scripts/wer_results_log.jsonl` — kaynak JSONL (pretty-printed
+- `&lt;upstream-sweep&gt;/wer_results_log.jsonl` — kaynak JSONL (pretty-printed
   kayitlar, bos satirla ayrilmis).
 - `asrbench/data/spaces/faster_whisper_full.yaml` — loudnorm_linear RESTORED
   bloku.
@@ -238,7 +238,7 @@ bir parametre cikardiniz veya hardcoded yaptiniz.
 - **Parametre cikarirken** yeni bir satir ekleyin: (1) ozet tabloya ekleyin,
   (2) kanit tablosu bloku olarak orijinal satirlari yapistirin, (3) ilgili
   YAML/py dosyasina kisa EXCLUDED yorumu ekleyin ki okuyan burayi bulsun.
-- **Pristine baseline gerekli:** Yeni bir exclusion icin SafeScribeAI'nin
+- **Pristine baseline gerekli:** Yeni bir exclusion icin an upstream sweep'nin
   tuned baseline'i YETERLI DEGIL. Iki baseline rejiminde de sinyal olmayan
   parametreler icin exclusion serbest; sadece birinde olan parametreler
   sweep'te tutulmali.

@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Response
 from pydantic import BaseModel
 
+from asrbench.api.validators import LocalPath
 from asrbench.db import get_conn
 
 logger = logging.getLogger(__name__)
@@ -33,7 +34,7 @@ class FetchRequest(BaseModel):
     source: str
     lang: str = "en"
     split: str = "test"
-    local_path: str | None = None
+    local_path: LocalPath | None = None
     max_duration_s: float | None = None
 
 

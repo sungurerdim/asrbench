@@ -833,9 +833,9 @@ async def _run_study_background(
 
         # Load the model once; the executor reuses the same backend across trials
         space = ParameterSpace.from_dict(req.space)
-        logger.info("Study %s: loading model %s", study_id, model_local_path)
+        logger.debug("Study %s: loading model %s", study_id, model_local_path)
         backend_instance.load(model_local_path, space.defaults())
-        logger.info("Study %s: model loaded, starting optimizer", study_id)
+        logger.debug("Study %s: model loaded, starting optimizer", study_id)
 
         try:
             engine = BenchmarkEngine(conn, cache_dir=config.storage.cache_dir)
