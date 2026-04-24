@@ -52,7 +52,9 @@ htmlcov/
 node_modules/
 ui/dist/
 ui/.svelte-kit/
-asrbench/static/bundle.*
+# asrbench/static/** is intentionally NOT ignored — CI builds the Vite
+# bundle and commits it so `pip install asrbench` ships a working UI.
+# The checked-in artefact is regenerated on every release workflow.
 
 # OS
 .DS_Store

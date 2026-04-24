@@ -6,10 +6,12 @@ import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from asrbench import __version__
 from asrbench.api import datasets, models, optimization, runs, system, ws
@@ -191,4 +193,38 @@ def create_app() -> FastAPI:
     app.include_router(optimization.router)
     app.include_router(ws.router)
 
+    _mount_ui_if_present(app)
+
     return app
+
+
+def _ui_static_dir() -> Path:
+    """Resolve the on-disk directory that Vite builds into.
+
+    Kept as a helper so tests can monkey-patch it to a tmp dir with
+    a handcrafted index.html.
+    """
+    return Path(__file__).resolve().parent / "static"
+
+
+def _mount_ui_if_present(app: FastAPI) -> None:
+    """Serve the built Svelte UI at ``/`` when the bundle exists.
+
+    ``pip install asrbench`` ships the wheel with ``asrbench/static/``
+    populated by the CI build step. Mounting happens AFTER every API
+    router is registered so path-matching still prefers real endpoints
+    (e.g. ``GET /system/health``) over a 404 from StaticFiles.
+
+    When the directory is empty (fresh checkout that has not run
+    ``npm run build`` yet), no mount is added so the dev experience
+    stays unchanged — developers hit the Vite dev server at :5173 via
+    the ``--dev`` flag and forget about the static mount entirely.
+    """
+    static_dir = _ui_static_dir()
+    if not static_dir.is_dir():
+        return
+    if not (static_dir / "index.html").is_file():
+        logger.info("UI bundle missing at %s — serve API only", static_dir)
+        return
+
+    app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="ui")

@@ -31,22 +31,68 @@ def serve(
             "present a matching X-API-Key header."
         ),
     ),
+    dev: bool = typer.Option(
+        False,
+        "--dev",
+        help=(
+            "Development mode. Enables --reload, assumes the Vite dev "
+            "server is running at http://localhost:5173, and warns when "
+            "the static bundle is missing so `npm run build` can be "
+            "deferred while iterating on the UI."
+        ),
+    ),
 ) -> None:
     """Start the ASRbench API server."""
     import uvicorn
 
     _enforce_network_policy(host=host, allow_network=allow_network)
+    _warn_on_missing_ui_bundle(dev=dev)
+
+    effective_reload = reload or dev
 
     if open_browser:
-        _schedule_browser_open(host, port)
+        _schedule_browser_open(host, port, dev=dev)
 
     uvicorn.run(
         "asrbench.main:create_app",
         factory=True,
         host=host,
         port=port,
-        reload=reload,
+        reload=effective_reload,
     )
+
+
+def _warn_on_missing_ui_bundle(*, dev: bool) -> None:
+    """Emit a one-line hint when the static UI bundle is missing.
+
+    In production installs the wheel ships ``asrbench/static/index.html``
+    — if it is absent the user either edited the source tree without
+    rebuilding or the CI pipeline dropped the artifact. In dev mode
+    the missing bundle is expected (the Vite dev server serves the UI)
+    so we just remind the user which port to visit.
+    """
+    from asrbench.main import _ui_static_dir
+
+    static_dir = _ui_static_dir()
+    has_bundle = (static_dir / "index.html").is_file()
+
+    if not has_bundle and not dev:
+        typer.secho(
+            (
+                f"UI bundle not found at {static_dir} — the server will "
+                "only serve the JSON API. Run `cd ui && npm run build` "
+                "or start with `--dev` to use the Vite dev server."
+            ),
+            err=True,
+            fg=typer.colors.YELLOW,
+        )
+    elif dev:
+        typer.secho(
+            "Dev mode — UI is expected at http://localhost:5173 "
+            "(run `cd ui && npm run dev` in another terminal).",
+            err=True,
+            fg=typer.colors.CYAN,
+        )
 
 
 def _enforce_network_policy(*, host: str, allow_network: bool) -> None:
@@ -88,12 +134,17 @@ def _enforce_network_policy(*, host: str, allow_network: bool) -> None:
         sys.exit(1)
 
 
-def _schedule_browser_open(host: str, port: int) -> None:
+def _schedule_browser_open(host: str, port: int, *, dev: bool = False) -> None:
     """Open the UI in a background thread once the port starts accepting.
 
     Polls 127.0.0.1:<port> instead of a fixed sleep so we don't open the
     browser before FastAPI is actually ready; gives up after 15 s to avoid
     blocking shutdown if the server never comes up.
+
+    In dev mode the dev UX is reversed — the Vite dev server runs at
+    ``:5173`` and hot-reloads; the API is an auxiliary process. Point
+    the browser at the dev server so saving a .svelte file refreshes
+    instantly.
     """
     import socket
     import threading
@@ -101,7 +152,8 @@ def _schedule_browser_open(host: str, port: int) -> None:
     import webbrowser
 
     target = "localhost" if host in ("0.0.0.0", "127.0.0.1") else host
-    url = f"http://{target}:{port}/"
+    ui_port = 5173 if dev else port
+    url = f"http://{target}:{ui_port}/"
 
     def _wait_then_open() -> None:
         for _ in range(150):
