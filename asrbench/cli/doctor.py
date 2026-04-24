@@ -83,6 +83,65 @@ def _check_hf_cache() -> Check:
     return Check("OK", "HuggingFace cache", f"{path} (will be created on first fetch)")
 
 
+def _check_hf_token() -> Check:
+    import os
+
+    token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+    if token:
+        return Check("OK", "HF_TOKEN", f"set (len={len(token)})")
+    return Check(
+        "WARN",
+        "HF_TOKEN",
+        "unset — gated datasets (Common Voice) will fail. "
+        "Create at https://huggingface.co/settings/tokens.",
+    )
+
+
+def _check_cuda_env() -> Check:
+    import os
+
+    value = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if value is None:
+        return Check("OK", "CUDA_VISIBLE_DEVICES", "unset (default = every GPU visible)")
+    return Check("OK", "CUDA_VISIBLE_DEVICES", value)
+
+
+def _check_asrbench_home() -> Check:
+    home = Path.home() / ".asrbench"
+    if not home.exists():
+        return Check("OK", "~/.asrbench", "will be created on first run")
+    try:
+        probe = home / ".doctor-write-probe"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+    except OSError as exc:
+        return Check("FAIL", "~/.asrbench", f"not writable: {exc}")
+    return Check("OK", "~/.asrbench", f"writable ({home})")
+
+
+def _check_disk_space(path: Path, minimum_gb: float = 10.0) -> Check:
+    try:
+        usage = shutil.disk_usage(str(path if path.exists() else path.parent))
+    except OSError as exc:
+        return Check("WARN", "disk space", f"{path}: {exc}")
+    free_gb = usage.free / (1024**3)
+    if free_gb < minimum_gb:
+        return Check(
+            "WARN",
+            "disk space",
+            f"{free_gb:.1f} GB free at {path} (benchmarks need ≥ {minimum_gb:.0f} GB)",
+        )
+    return Check("OK", "disk space", f"{free_gb:.1f} GB free at {path}")
+
+
+def _check_duckdb_version() -> Check:
+    try:
+        version = im.version("duckdb")
+    except im.PackageNotFoundError:
+        return Check("FAIL", "DuckDB", "not installed")
+    return Check("OK", "DuckDB", f"v{version}")
+
+
 def _check_vram() -> Check:
     try:
         from asrbench.engine.vram import get_vram_monitor
@@ -102,6 +161,9 @@ def _check_vram() -> Check:
 def _run_all_checks() -> list[Check]:
     return [
         _check_python(),
+        _check_duckdb_version(),
+        _check_asrbench_home(),
+        _check_disk_space(Path.home() / ".asrbench"),
         _check_binary(
             "ffmpeg",
             "install via `winget install ffmpeg` / `apt install ffmpeg` / `brew install ffmpeg`",
@@ -109,10 +171,20 @@ def _run_all_checks() -> list[Check]:
         _check_backend("faster_whisper", "pip install 'asrbench[faster-whisper]'"),
         _check_backend("pywhispercpp", "pip install 'asrbench[whisper-cpp]'"),
         _check_backend(
+            "nemo",
+            "pip install 'asrbench[parakeet]' (NVIDIA Parakeet via NeMo)",
+        ),
+        _check_backend(
+            "transformers",
+            "pip install 'asrbench[qwen]' (Qwen2-Audio; review Qwen Community License first)",
+        ),
+        _check_backend(
             "trnorm",
             "pip install 'asrbench[tr]' (Turkish normalizer)",
         ),
         _check_hf_cache(),
+        _check_hf_token(),
+        _check_cuda_env(),
         _check_vram(),
         _check_port(8765),
     ]

@@ -40,6 +40,25 @@ dependencies = [
 [project.optional-dependencies]
 faster-whisper = ["faster-whisper>=1.1,<2.0"]
 whisper-cpp    = ["pywhispercpp>=1.3,<2.0"]
+# NVIDIA Parakeet via NeMo. NeMo's wheel is large (~1 GB) and its
+# install script assumes a working CUDA toolkit; the upstream README
+# has platform-specific hints. Apache-2.0 runtime; the checkpoints
+# are CC-BY-4.0.
+parakeet       = [
+    "nemo_toolkit[asr]>=1.23,<2.0",
+    "torch>=2.1,<3.0",
+    "omegaconf>=2.3,<3.0",
+]
+# Qwen-Audio via HuggingFace Transformers. **License warning**: the
+# Qwen Community License restricts large-scale commercial use — read
+# https://github.com/QwenLM/Qwen2-Audio/blob/main/LICENSE before
+# enabling this in production.
+qwen           = [
+    "transformers>=4.45,<5.0",
+    "torch>=2.1,<3.0",
+    "accelerate>=0.30,<2.0",
+    "librosa>=0.10,<1.0",
+]
 tr             = ["trnorm @ git+https://github.com/ysdede/trnorm.git", "scipy>=1.11,<2.0"]
 preprocessing  = [
     "pyloudnorm>=0.1",
@@ -47,6 +66,7 @@ preprocessing  = [
     "scipy>=1.11,<2.0",
 ]
 pdf            = ["weasyprint>=62.0"]
+observability  = ["prometheus-fastapi-instrumentator>=7.0,<8.0"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
@@ -65,9 +85,12 @@ asrbench = "asrbench.cli.app:app"
 [project.entry-points."asrbench.backends"]
 faster-whisper = "asrbench.backends.faster_whisper:FasterWhisperBackend"
 whisper-cpp    = "asrbench.backends.whisper_cpp:WhisperCppBackend"
-# Parakeet and Qwen-ASR ship as third-party plugin templates under
-# docs/plugins/ — they pull in very heavy deps (NeMo, PyTorch) whose CUDA
-# coupling varies by host, so they are deliberately not registered here.
+# Parakeet and Qwen-Audio are registered but only importable when the
+# matching extra is installed. `load_backends()` catches the ImportError
+# at discovery time, so a fresh install without these extras still shows
+# only the wired-up backends in `asrbench doctor`.
+parakeet       = "asrbench.backends.parakeet:ParakeetBackend"
+qwen_asr       = "asrbench.backends.qwen_asr:QwenASRBackend"
 
 [tool.hatch.version]
 path = "asrbench/_version.py"
