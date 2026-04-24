@@ -1,6 +1,6 @@
 # ASRbench API reference
 
-Auto-generated from the live FastAPI OpenAPI schema (version `0.1.0`).
+Auto-generated from the live FastAPI OpenAPI schema (version `1.0.0`).
 Regenerate with `python scripts/gen_api_docs.py`.
 
 ## datasets
