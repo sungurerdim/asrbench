@@ -1,0 +1,54 @@
+# Local docker-compose for ASRbench.
+#
+# Usage:
+#   docker compose up --build          # build + run, Ctrl-C to stop
+#   docker compose run --rm asrbench asrbench doctor
+#
+# The container expects ASRBENCH_API_KEY (set via the shell or a local
+# `.env` file). ~/.asrbench on the host is mounted into the container
+# so DuckDB state, HF cache, and the dataset download cache all survive
+# container recreation.
+
+services:
+  asrbench:
+    image: asrbench:dev
+    build:
+      context: .
+    container_name: asrbench
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    environment:
+      # Required when binding to 0.0.0.0 (the Dockerfile CMD).
+      - ASRBENCH_API_KEY=${ASRBENCH_API_KEY:-change-me-before-deploy}
+      # Optional HF token for gated datasets.
+      - HF_TOKEN=${HF_TOKEN:-}
+      - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN:-}
+      # Pin a GPU when the host has several. Leave unset to see every
+      # GPU visible to the NVIDIA driver.
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-}
+    volumes:
+      - asrbench-home:/home/asrbench/.asrbench
+      - ${HOME}/.cache/huggingface:/home/asrbench/.cache/huggingface:rw
+    # Uncomment to hand the container a GPU on Linux hosts with the
+    # NVIDIA Container Toolkit installed.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: ["gpu"]
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - -fsS
+        - http://127.0.0.1:8765/system/health
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  asrbench-home:

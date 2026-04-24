@@ -12,7 +12,7 @@ license = { text = "MIT" }
 authors = [{ name = "Sungur Zahid Erdim" }]
 keywords = ["asr", "speech-recognition", "benchmark", "wer", "faster-whisper", "whisper"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",

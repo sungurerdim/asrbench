@@ -8,4 +8,4 @@ the CLI ``--version`` flag) picks it up automatically.
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"

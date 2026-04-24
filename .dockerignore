@@ -1,0 +1,45 @@
+# --- Source control ---
+.git/
+.gitignore
+.gitattributes
+
+# --- Python artefacts ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# --- Node artefacts (rebuilt in stage 1) ---
+ui/node_modules/
+ui/dist/
+ui/.svelte-kit/
+
+# --- Editors / OS ---
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# --- Claude session state ---
+.claude/
+
+# --- Tests ship via the wheel; the container itself doesn't need them ---
+tests/
+docs/
+scripts/benchmarks/
+
+# --- Local runtime state ---
+~/.asrbench/
+*.db
+*.db-wal
+*.db-shm

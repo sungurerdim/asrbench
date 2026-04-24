@@ -1,6 +1,105 @@
 # Changelog
 
-All notable changes to ASRbench are documented here.
+All notable changes to ASRbench are documented here. The project
+follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
+and [Semantic Versioning](https://semver.org/).
+
+## [Unreleased]
+
+## [1.0.0] - 2026-04-24
+
+First public release on PyPI.
+
+### Added
+
+- **Public API auth** — `AuthMiddleware` with loopback bypass and
+  mandatory `X-API-Key` for non-loopback clients. `asrbench serve`
+  refuses to bind to non-loopback hosts without `--allow-network` +
+  `ASRBENCH_API_KEY`.
+- **Filesystem allow-list** — `LocalPath` validator confines
+  dataset/model paths to `~/.asrbench` plus
+  `ASRBENCH_ALLOWED_PATHS`. Traversal attacks (`../`) fail resolution.
+- **Rate-limit refinement** — POST /runs/start, /optimize/start,
+  /datasets/fetch, /models/register now subject to the limiter. Only
+  GET polling on /runs/ and /optimize/ stays exempt.
+- **Traceback sanitisation** — `engine/errors.py::sanitize_error`
+  strips tracebacks before they land in DB rows or API responses.
+- **FFmpeg param allow-list** — string-valued preprocessing knobs go
+  through a whitelist regex (defence-in-depth; today only the `format`
+  key reaches the subprocess).
+- **Startup recovery** — orphaned `pending`/`running` rows flip to
+  `failed` on boot so a hard kill can't leave forever-spinning jobs.
+- **Graceful shutdown** — 30 s drain window sets
+  `cancel_requested=true` on live runs, then flips stragglers to
+  `cancelled` with a diagnostic error message.
+- **DB-backed cancel flag** — `runs.cancel_requested` +
+  `optimization_studies.cancel_requested` replace the in-memory set;
+  benchmark engine polls between segments and raises `RunCancelled`.
+- **UI wheel shipping** — Vite bundle committed to `asrbench/static`
+  and included in the built wheel. `pip install asrbench` now serves
+  the Svelte dashboard on first launch.
+- **`--dev` serve mode** — pairs with `cd ui && npm run dev`; redirects
+  `--open` to the Vite dev server.
+- **Dataset fetch timeout** — `limits.dataset_fetch_timeout_s`
+  (default 600 s) wraps the HF stream in `asyncio.wait_for`.
+- **Per-segment backend timeout** — `limits.segment_timeout_s`
+  (default 120 s) killed stuck CUDA kernels before they starve the
+  event loop.
+- **VRAM capacity guard** — `VRAMMonitor.require_capacity()` refuses
+  backend loads when free VRAM + 10 % margin is insufficient;
+  `ResourceExhausted` replaces raw mid-load CUDA OOMs.
+- **NVIDIA Parakeet backend** (`asrbench[parakeet]`, Apache-2.0 +
+  CC-BY-4.0 weights) — TDT/CTC/RNN-T variants via NeMo.
+- **Qwen-Audio backend** (`asrbench[qwen]`, **Qwen Community License
+  — commercial use restricted**) — Qwen2-Audio via Transformers with
+  a fixed transcription-only chat template.
+- **Prometheus metrics** (`asrbench[observability]`) — `/metrics`
+  endpoint plus custom gauges: `asrbench_run_duration_seconds`,
+  `asrbench_run_total{status}`, `asrbench_vram_used_mb`,
+  `asrbench_backend_errors_total{backend}`.
+- **Log rotation** — `--log-file`, `--log-max-mb`,
+  `--log-backup-count` flags on `asrbench serve`.
+- **Docker image** — multi-stage (Node 20 → Python 3.11 slim), runs
+  as non-root `asrbench` user with `HEALTHCHECK`. `docker-compose.yml`
+  included.
+- **CI/CD** — `.github/workflows/ci.yml` runs lint, test (Python
+  3.11/3.12/3.13 × Linux/macOS/Windows), UI bundle diff, wheel build.
+  `.github/workflows/release.yml` publishes to PyPI via OIDC trusted
+  publisher on `v*` tags.
+- **Lockfile** — `uv.lock` pins the 111-package resolution so
+  `uv sync --frozen` reproduces CI exactly.
+- **Pre-commit** — `ruff`, `ruff-format`, standard hygiene hooks,
+  plus a local reminder when `ui/src` is newer than the committed
+  bundle.
+- **Coverage gating** — `pytest --cov-fail-under=70` (current run:
+  78.09 %).
+- **Doctor extensions** — DuckDB version, `~/.asrbench` writability,
+  disk space ≥ 10 GB, HF_TOKEN, CUDA_VISIBLE_DEVICES, Parakeet/Qwen
+  extras.
+- **Auto-generated docs** — `scripts/gen_api_docs.py` + CI
+  `docs-check` job keep `docs/API.md` in sync with the live OpenAPI
+  schema.
+- **README rewrite + `THIRD-PARTY-LICENSES.md`** — commercial-use
+  matrix, gated-dataset notes, per-extra license table.
+
+### Changed
+
+- **`api/optimization.py` refactored** from 1459 lines into 5 focused
+  modules: `optimization.py` (router, 348 LOC), `_optimization_models`
+  (Pydantic, 192), `_optimization_persistence` (DuckDB helpers, 486),
+  `_optimization_runners` (single-study task, 221),
+  `_optimization_multistage` (two-stage + global-config, 346).
+- **Ruff ruleset expanded** to `E, F, I, UP, B, RUF, SIM, C4` with
+  narrow per-file ignores for CLI / tests.
+- **Mypy** now enables warn_return_any, strict_equality,
+  no_implicit_optional, warn_unused_ignores / redundant_casts.
+- **Bumped** `@sveltejs/vite-plugin-svelte` 4.x → 5.x to clear a
+  Vite 6 peer-dep conflict.
+
+### Security
+
+- Full security-hardening pass (auth, rate-limit, path whitelist,
+  traceback sanitisation, ffmpeg param allow-list).
 
 ## [0.2.0] - 2026-04-23
 

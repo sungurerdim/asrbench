@@ -193,6 +193,10 @@ def create_app() -> FastAPI:
     app.include_router(optimization.router)
     app.include_router(ws.router)
 
+    from asrbench.api.metrics import install_metrics
+
+    install_metrics(app)
+
     _mount_ui_if_present(app)
 
     return app

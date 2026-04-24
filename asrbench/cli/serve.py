@@ -41,12 +41,33 @@ def serve(
             "deferred while iterating on the UI."
         ),
     ),
+    log_file: str = typer.Option(
+        "",
+        "--log-file",
+        help=(
+            "Path to a rotating log file. When set, log records are also "
+            "written to this file with a 100 MiB rolling size (override "
+            "with --log-max-mb) and 5-backup retention."
+        ),
+    ),
+    log_max_mb: int = typer.Option(
+        100,
+        "--log-max-mb",
+        help="Rollover size for --log-file in MiB.",
+    ),
+    log_backup_count: int = typer.Option(
+        5,
+        "--log-backup-count",
+        help="How many rotated log files to keep.",
+    ),
 ) -> None:
     """Start the ASRbench API server."""
     import uvicorn
 
     _enforce_network_policy(host=host, allow_network=allow_network)
     _warn_on_missing_ui_bundle(dev=dev)
+    if log_file:
+        _install_rotating_log(path=log_file, max_mb=log_max_mb, backup_count=log_backup_count)
 
     effective_reload = reload or dev
 
@@ -93,6 +114,40 @@ def _warn_on_missing_ui_bundle(*, dev: bool) -> None:
             err=True,
             fg=typer.colors.CYAN,
         )
+
+
+def _install_rotating_log(*, path: str, max_mb: int, backup_count: int) -> None:
+    """Attach a size-based RotatingFileHandler to the root logger.
+
+    The handler is added in addition to uvicorn's stderr output so
+    operators can tail both surfaces. ``max_mb`` guards against a
+    single log file growing unbounded when the server stays up for
+    months.
+    """
+    import logging
+    from logging.handlers import RotatingFileHandler
+    from pathlib import Path
+
+    log_path = Path(path).expanduser().resolve()
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    handler = RotatingFileHandler(
+        str(log_path),
+        maxBytes=max(1, max_mb) * 1024 * 1024,
+        backupCount=max(0, backup_count),
+        encoding="utf-8",
+    )
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s %(levelname)s [%(name)s] %(message)s",
+            datefmt="%Y-%m-%dT%H:%M:%S",
+        )
+    )
+    logging.getLogger().addHandler(handler)
+    typer.secho(
+        f"Log rotation enabled → {log_path} (max {max_mb} MiB × {backup_count})",
+        err=True,
+        fg=typer.colors.CYAN,
+    )
 
 
 def _enforce_network_policy(*, host: str, allow_network: bool) -> None:
