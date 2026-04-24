@@ -20,7 +20,7 @@ class _SluggishBackend:
         self.sleep_s = sleep_s
         self.calls = 0
 
-    def transcribe(self, audio, lang, params):  # noqa: ARG002
+    def transcribe(self, audio, lang, params):
         self.calls += 1
         time.sleep(self.sleep_s)
         from asrbench.backends.base import Segment
@@ -32,7 +32,7 @@ class _FastBackend:
     family = "test"
     name = "test-fast"
 
-    def transcribe(self, audio, lang, params):  # noqa: ARG002
+    def transcribe(self, audio, lang, params):
         from asrbench.backends.base import Segment
 
         return [Segment(offset_s=0.0, duration_s=0.1, ref_text="", hyp_text="fast")]

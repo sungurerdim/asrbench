@@ -118,26 +118,25 @@ class BenchmarkTrialExecutor:
         context_supplied = (
             source_model_id is not None or source_dataset_id is not None or source_lang is not None
         )
-        if context_supplied:
-            if (
-                source_model_id != self.model_id
-                or source_dataset_id != self.dataset.dataset_id
-                or source_lang != self.lang
-            ):
-                logger.warning(
-                    "warm_load refused: context mismatch "
-                    "(prior: model=%s dataset=%s lang=%s; "
-                    "current: model=%s dataset=%s lang=%s). "
-                    "Stage-1 scores are not valid under a different dataset — "
-                    "re-evaluation is required.",
-                    source_model_id,
-                    source_dataset_id,
-                    source_lang,
-                    self.model_id,
-                    self.dataset.dataset_id,
-                    self.lang,
-                )
-                return 0
+        if context_supplied and (
+            source_model_id != self.model_id
+            or source_dataset_id != self.dataset.dataset_id
+            or source_lang != self.lang
+        ):
+            logger.warning(
+                "warm_load refused: context mismatch "
+                "(prior: model=%s dataset=%s lang=%s; "
+                "current: model=%s dataset=%s lang=%s). "
+                "Stage-1 scores are not valid under a different dataset — "
+                "re-evaluation is required.",
+                source_model_id,
+                source_dataset_id,
+                source_lang,
+                self.model_id,
+                self.dataset.dataset_id,
+                self.lang,
+            )
+            return 0
 
         loaded = 0
         for trial in trials:

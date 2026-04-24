@@ -117,7 +117,7 @@ async def _graceful_shutdown(conn: duckdb.DuckDBPyConnection) -> None:
 
 
 @asynccontextmanager
-async def _lifespan(_app: FastAPI) -> AsyncGenerator[None]:  # noqa: ARG001
+async def _lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     """Startup: init DB + clean stale rows. Shutdown: drain + close DB."""
     from asrbench.db import get_conn, reset
 

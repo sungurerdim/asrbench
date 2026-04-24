@@ -177,11 +177,11 @@ class FasterWhisperBackend(BaseBackend):
     def load(self, model_path: str, params: dict) -> None:
         try:
             from faster_whisper import WhisperModel
-        except ImportError:
+        except ImportError as exc:
             raise RuntimeError(
                 "faster-whisper is not installed. "
                 "Install with: pip install asrbench[faster-whisper]"
-            )
+            ) from exc
 
         device = params.get("device", "cuda")
         compute_type = params.get("compute_type", "float16")

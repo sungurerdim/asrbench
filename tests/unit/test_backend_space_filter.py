@@ -77,13 +77,13 @@ class _StubBackend(BaseBackend):
     def default_params(self) -> dict:
         return {}
 
-    def load(self, model_path: str, params: dict) -> None:  # noqa: ARG002
+    def load(self, model_path: str, params: dict) -> None:
         return None
 
     def unload(self) -> None:
         return None
 
-    def transcribe(self, audio, lang, params) -> list[Segment]:  # type: ignore[override]  # noqa: ARG002
+    def transcribe(self, audio, lang, params) -> list[Segment]:  # type: ignore[override]
         return []
 
 
@@ -147,16 +147,16 @@ class _FakeFilteringBackend(BaseBackend):
     def default_params(self) -> dict:
         return {}
 
-    def load(self, model_path: str, params: dict) -> None:  # noqa: ARG002
+    def load(self, model_path: str, params: dict) -> None:
         return None
 
     def unload(self) -> None:
         return None
 
-    def transcribe(self, audio, lang, params) -> list[Segment]:  # type: ignore[override]  # noqa: ARG002
+    def transcribe(self, audio, lang, params) -> list[Segment]:  # type: ignore[override]
         return []
 
-    def supported_params(self, *, mode_hint: dict | None = None) -> set[str] | None:  # noqa: ARG002
+    def supported_params(self, *, mode_hint: dict | None = None) -> set[str] | None:
         return {"keep_me", "preprocess.foo"}
 
 
@@ -186,7 +186,7 @@ def test_optimizer_filters_space_via_backend() -> None:
     # final space the optimizer kept after filtering.
     objective = SingleMetricObjective(metric="wer")
     executor = SyntheticTrialExecutor(
-        metric_fn=lambda cfg: _metrics(0.1),  # noqa: ARG005
+        metric_fn=lambda cfg: _metrics(0.1),
         objective=objective,
     )
     optimizer = IAMSOptimizer(

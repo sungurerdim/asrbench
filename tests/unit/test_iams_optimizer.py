@@ -81,10 +81,7 @@ def asymmetric_interaction_trap(cfg: Mapping[str, Any]) -> Mapping[str, float]:
     """
     vad = bool(cfg.get("vad", False))
     chunk = int(cfg.get("chunk_length", 10))
-    if not vad:
-        t = {10: 0.12, 20: 0.11, 30: 0.14}
-    else:
-        t = {10: 0.15, 20: 0.13, 30: 0.05}
+    t = {10: 0.12, 20: 0.11, 30: 0.14} if not vad else {10: 0.15, 20: 0.13, 30: 0.05}
     return _metrics(t[chunk])
 
 

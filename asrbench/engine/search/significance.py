@@ -215,7 +215,7 @@ def sensitivity_score(
     baseline: TrialResult,
     min_trial: TrialResult,
     max_trial: TrialResult,
-    objective: Objective,  # noqa: ARG001  (kept for API symmetry — future use)
+    objective: Objective,
 ) -> float:
     """
     Scalar ranking used to sort sensitive parameters by priority.

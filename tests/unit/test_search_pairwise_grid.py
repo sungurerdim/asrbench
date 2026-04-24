@@ -65,10 +65,7 @@ def interaction_trap(cfg: Mapping[str, Any]) -> Mapping[str, float]:
     """
     vad = bool(cfg.get("vad", False))
     chunk = int(cfg.get("chunk_length", 10))
-    if not vad:
-        table = {10: 0.08, 20: 0.09, 30: 0.11}
-    else:
-        table = {10: 0.11, 20: 0.10, 30: 0.08}
+    table = {10: 0.08, 20: 0.09, 30: 0.11} if not vad else {10: 0.11, 20: 0.1, 30: 0.08}
     return _metrics(table[chunk])
 
 
@@ -157,10 +154,8 @@ class TestInteractionDetection:
         def asymmetric_trap(cfg):
             vad = bool(cfg.get("vad", False))
             chunk = int(cfg.get("chunk_length", 10))
-            if not vad:
-                t = {10: 0.09, 20: 0.10, 30: 0.12}
-            else:
-                t = {10: 0.12, 20: 0.11, 30: 0.05}  # off-diagonal strictly best
+            # off-diagonal (vad=True, chunk=30) is strictly the best point
+            t = {10: 0.12, 20: 0.11, 30: 0.05} if vad else {10: 0.09, 20: 0.10, 30: 0.12}
             return _metrics(t[chunk])
 
         space = ParameterSpace(

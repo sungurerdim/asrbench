@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import Callable
 from typing import Any
@@ -92,15 +93,13 @@ async def ws_run_progress(ws: WebSocket, run_id: str) -> None:
         await ws.close()
         return
 
-    try:
+    with contextlib.suppress(WebSocketDisconnect):
         await _subscribe_loop(
             ws,
             topic=f"runs:{run_id}",
             initial=initial,
             terminal_check=_run_terminal,
         )
-    except WebSocketDisconnect:
-        pass
 
 
 @router.websocket("/ws/optimize/{study_id}")
@@ -133,15 +132,13 @@ async def ws_optimize_progress(ws: WebSocket, study_id: str) -> None:
         await ws.close()
         return
 
-    try:
+    with contextlib.suppress(WebSocketDisconnect):
         await _subscribe_loop(
             ws,
             topic=f"optimize:{study_id}",
             initial=initial,
             terminal_check=_study_terminal,
         )
-    except WebSocketDisconnect:
-        pass
 
 
 @router.websocket("/ws/datasets/{dataset_id}")
@@ -171,15 +168,13 @@ async def ws_dataset_progress(ws: WebSocket, dataset_id: str) -> None:
     def _verified_terminal(event: dict[str, Any]) -> bool:
         return bool(event.get("verified"))
 
-    try:
+    with contextlib.suppress(WebSocketDisconnect):
         await _subscribe_loop(
             ws,
             topic=f"datasets:{dataset_id}",
             initial=initial,
             terminal_check=_verified_terminal,
         )
-    except WebSocketDisconnect:
-        pass
 
 
 @router.websocket("/ws/vram")
@@ -205,10 +200,8 @@ async def ws_vram(ws: WebSocket) -> None:
 async def ws_activity(ws: WebSocket) -> None:
     """Stream structured activity log lines from the event bus."""
     await ws.accept()
-    try:
+    with contextlib.suppress(WebSocketDisconnect):
         await _subscribe_loop(ws, topic="activity")
-    except WebSocketDisconnect:
-        pass
 
 
 # Legacy alias — early UI code subscribed to /ws/logs for the same
@@ -217,10 +210,8 @@ async def ws_activity(ws: WebSocket) -> None:
 @router.websocket("/ws/logs")
 async def ws_logs(ws: WebSocket) -> None:
     await ws.accept()
-    try:
+    with contextlib.suppress(WebSocketDisconnect):
         await _subscribe_loop(ws, topic="activity")
-    except WebSocketDisconnect:
-        pass
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +271,8 @@ def _ensure_vram_sampler() -> _VRAMSampler:
         _vram_sampler = _VRAMSampler()
     # We need to schedule acquire synchronously since the caller may not
     # want to await; kick it off as a task so a concurrent accept isn't
-    # blocked waiting on the sampler lock.
-    asyncio.create_task(_vram_sampler.acquire())
+    # blocked waiting on the sampler lock. The task reference is not
+    # retained because its only side effect (ref-count increment) survives
+    # via the sampler instance itself.
+    asyncio.create_task(_vram_sampler.acquire())  # noqa: RUF006
     return _vram_sampler

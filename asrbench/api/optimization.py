@@ -58,15 +58,15 @@ from ._optimization_runners import build_objective, run_single_study
 
 # Re-exports kept so tests / call sites can keep ``from asrbench.api.optimization import X``.
 __all__ = [
-    "router",
-    "OptimizeStartRequest",
-    "OptimizeStartResponse",
-    "TwoStageStartRequest",
-    "TwoStageStartResponse",
     "GlobalConfigStartRequest",
     "GlobalConfigStartResponse",
+    "OptimizeStartRequest",
+    "OptimizeStartResponse",
     "StudyResponse",
     "TrialResponse",
+    "TwoStageStartRequest",
+    "TwoStageStartResponse",
+    "router",
 ]
 
 logger = logging.getLogger(__name__)

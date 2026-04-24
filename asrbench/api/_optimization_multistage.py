@@ -30,7 +30,7 @@ from ._optimization_runners import (
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["run_two_stage", "run_global_config"]
+__all__ = ["run_global_config", "run_two_stage"]
 
 
 # ---------------------------------------------------------------------------
@@ -307,7 +307,7 @@ async def _execute_global(
                     backend=backend_instance,
                     lang=ds_spec.lang,
                 )
-                for prepared, ds_spec in zip(prepared_bundle, req.datasets)
+                for prepared, ds_spec in zip(prepared_bundle, req.datasets, strict=False)
             ]
             return MultiDatasetTrialExecutor(executors=inner, weights=weights, labels=labels)
 

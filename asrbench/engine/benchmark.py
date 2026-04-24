@@ -263,7 +263,10 @@ class BenchmarkEngine:
 
             # RTFx p95: use per-segment RTFx values
             seg_rtfx = np.array(
-                [seg.duration_s / e if e > 0 else 0.0 for seg, e in zip(segments, seg_elapsed)]
+                [
+                    seg.duration_s / e if e > 0 else 0.0
+                    for seg, e in zip(segments, seg_elapsed, strict=False)
+                ]
             )
             rtfx_p95 = float(np.percentile(seg_rtfx, 5)) if len(seg_rtfx) > 0 else 0.0
 

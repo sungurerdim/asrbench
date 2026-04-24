@@ -27,7 +27,7 @@ class TestFetchTimeout:
         cfg = get_config()
         monkeypatch.setattr(cfg.limits, "dataset_fetch_timeout_s", 1.0)
 
-        def _sluggish_fetch(self, source, lang, split, max_duration_s):  # noqa: ARG001
+        def _sluggish_fetch(self, source, lang, split, max_duration_s):
             import time
 
             time.sleep(2.0)

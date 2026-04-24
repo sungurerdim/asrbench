@@ -30,6 +30,20 @@ pre-commit install
 
 Requires Python 3.11+.
 
+### Environment variables
+
+ASRbench reads a small set of environment variables. None of them are
+required for the default single-user loopback mode; listed here so a
+new contributor can see the full surface.
+
+| Variable | When needed | What it does |
+|----------|-------------|--------------|
+| `ASRBENCH_API_KEY` | `serve --host 0.0.0.0 --allow-network` | Required secret for remote `X-API-Key` auth. Use 32 bytes of entropy. |
+| `ASRBENCH_ALLOWED_PATHS` | Dataset / model paths outside `~/.asrbench` | Comma- or OS-pathsep-separated extra roots that `LocalPath` will accept. |
+| `HF_TOKEN` | Gated HuggingFace datasets | Personal access token (READ scope). |
+| `HUGGING_FACE_HUB_TOKEN` | Legacy HF client | Same value as `HF_TOKEN`; the HF client is still migrating. |
+| `CUDA_VISIBLE_DEVICES` | Multi-GPU hosts | Pin the benchmark run to a specific device. |
+
 ### UI development
 
 The Svelte UI lives under `ui/`. The committed bundle under

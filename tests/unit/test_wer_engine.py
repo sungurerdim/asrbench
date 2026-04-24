@@ -133,7 +133,7 @@ class TestArabicNormalization:
         result = _normalize_text("بِسْمِ اللَّهِ", "ar")
         # No diacritic code points (U+064B–U+065F, U+0670) should remain
         for ch in result:
-            assert "\u064b" > ch or ch > "\u065f", (
+            assert ch < "\u064b" or ch > "\u065f", (
                 f"Diacritic U+{ord(ch):04X} found in Arabic normalized output: {result!r}"
             )
 

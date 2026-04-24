@@ -109,7 +109,7 @@ class MultiDatasetTrialExecutor:
         metrics (prefixed with the dataset label).
         """
         components: list[tuple[str, TrialResult]] = []
-        for label, executor in zip(self.labels or [], self.executors):  # type: ignore[arg-type]
+        for label, executor in zip(self.labels or [], self.executors, strict=False):  # type: ignore[arg-type]
             component_reasoning = reasoning or phase
             trial = executor.evaluate(
                 config,
@@ -119,13 +119,13 @@ class MultiDatasetTrialExecutor:
             components.append((label, trial))
 
         weights = list(self.weights or [])
-        aggregate_score = sum(w * t.score for w, (_, t) in zip(weights, components))
+        aggregate_score = sum(w * t.score for w, (_, t) in zip(weights, components, strict=False))
 
         # Variance-weighted CI: treat each dataset's CI half-width as a
         # standard-error proxy and combine under independence.
         lo_var = 0.0
         hi_var = 0.0
-        for w, (_, t) in zip(weights, components):
+        for w, (_, t) in zip(weights, components, strict=False):
             half = max(1e-12, (t.score_ci[1] - t.score_ci[0]) / 2.0)
             # Halve the half-width twice (once to SE, once to combined),
             # then rebuild the 95% CI under Gaussian assumption.
@@ -183,7 +183,7 @@ class MultiDatasetTrialExecutor:
         chaining with ``MultiFidelityTrialExecutor`` at the outer level.
         """
         components: list[tuple[str, TrialResult]] = []
-        for label, executor in zip(self.labels or [], self.executors):  # type: ignore[arg-type]
+        for label, executor in zip(self.labels or [], self.executors, strict=False):  # type: ignore[arg-type]
             component_reasoning = reasoning or phase
             if hasattr(executor, "evaluate_at_fraction"):
                 trial = executor.evaluate_at_fraction(  # type: ignore[attr-defined]
@@ -210,10 +210,10 @@ class MultiDatasetTrialExecutor:
     ) -> TrialResult:
         """Shared aggregation helper used by both evaluate paths."""
         weights = list(self.weights or [])
-        aggregate_score = sum(w * t.score for w, (_, t) in zip(weights, components))
+        aggregate_score = sum(w * t.score for w, (_, t) in zip(weights, components, strict=False))
         lo_var = 0.0
         hi_var = 0.0
-        for w, (_, t) in zip(weights, components):
+        for w, (_, t) in zip(weights, components, strict=False):
             half = max(1e-12, (t.score_ci[1] - t.score_ci[0]) / 2.0)
             se = half / 1.96
             lo_var += (w * se) ** 2

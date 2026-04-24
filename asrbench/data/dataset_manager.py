@@ -197,7 +197,7 @@ class DatasetManager:
         self._conn = conn
         self._cache = AudioCache(config.storage.cache_dir)
 
-    def prepare(self, dataset_id: str, *, max_duration_s: float | None = None) -> PreparedDataset:  # noqa: E501
+    def prepare(self, dataset_id: str, *, max_duration_s: float | None = None) -> PreparedDataset:
         """
         Prepare a dataset for benchmarking.
 

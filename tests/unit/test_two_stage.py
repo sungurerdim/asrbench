@@ -68,13 +68,13 @@ class _NullBackend(BaseBackend):
     def default_params(self) -> dict:
         return {}
 
-    def load(self, model_path: str, params: dict) -> None:  # noqa: ARG002
+    def load(self, model_path: str, params: dict) -> None:
         return None
 
     def unload(self) -> None:
         return None
 
-    def transcribe(self, audio, lang, params) -> list[Segment]:  # type: ignore[override]  # noqa: ARG002
+    def transcribe(self, audio, lang, params) -> list[Segment]:  # type: ignore[override]
         return []
 
 
@@ -97,7 +97,7 @@ def test_run_two_stage_end_to_end() -> None:
         # doesn't actually use it.
         return duration_s
 
-    def executor_factory(prepared, duration_s: int):  # noqa: ARG001
+    def executor_factory(prepared, duration_s: int):
         calls.append(duration_s)
         return executor
 
@@ -159,7 +159,7 @@ def test_two_stage_auto_budget_and_epsilon() -> None:
         backend=_NullBackend(),
         mode_hint=None,
         dataset_loader=lambda d: d,
-        executor_factory=lambda ds, d: executor,  # noqa: ARG005
+        executor_factory=lambda ds, d: executor,
         cfg=cfg,
     )
 

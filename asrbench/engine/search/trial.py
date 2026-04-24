@@ -275,7 +275,7 @@ class SyntheticTrialExecutor:
         *,
         phase: str = "unknown",
         reasoning: str = "",
-        fraction: float = 1.0,  # noqa: ARG002 — synthetic executor has no segments to slice
+        fraction: float = 1.0,
     ) -> TrialResult:
         """
         Multi-fidelity hook: synthetic executors have no segments to slice,

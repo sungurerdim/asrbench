@@ -86,12 +86,80 @@ line-length    = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP"]
+# Active rule sets:
+#   E / F  — pycodestyle + pyflakes (correctness + style)
+#   I      — isort (import ordering)
+#   UP     — pyupgrade (use modern Python syntax)
+#   B      — flake8-bugbear (likely bugs: mutable defaults, assert (), …)
+#   RUF    — ruff-native rules (e.g. RUF013 implicit Optional)
+#   SIM    — flake8-simplify (collapse unnecessary branches)
+#   C4     — flake8-comprehensions (dict/set/list idioms)
+# Rule sets still on the roadmap:
+#   S      — bandit security checks (flip on once Faz 10 follow-up lands)
+#   ANN    — type-annotation coverage (Faz 10 follow-up; needs a sweep)
+select = ["E", "F", "I", "UP", "B", "RUF", "SIM", "C4"]
+ignore = [
+    # RUF001/RUF002/RUF003: allow ambiguous unicode characters — the docstrings
+    # use em-dashes and non-breaking spaces deliberately.
+    "RUF001",
+    "RUF002",
+    "RUF003",
+    # SIM102: nested-if collapses aren't always clearer when each arm carries
+    # a comment or a short-circuit rationale. Revisit case-by-case later.
+    "SIM102",
+    # SIM113: `enumerate()` isn't always clearer than an explicit counter when
+    # the counter only advances on a subset of iterations.
+    "SIM113",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests can use asserts, ignore annotations, broad exception raises,
+# and the contextlib.suppress / fire-and-forget task patterns that are
+# idiomatic in async test scaffolding.
+"tests/**" = [
+    "S101",   # assert (bandit)
+    "ANN",    # missing annotations
+    "B017",   # broad pytest.raises(Exception)
+    "SIM117", # nested with-statements are clearer in test scaffolding
+    "SIM105", # try/except/pass is common in fixtures to swallow teardown noise
+    "RUF043", # pytest.raises(..., match=...) regex ambiguity
+]
+# Typer idioms use function-call defaults (`typer.Option(...)`,
+# `typer.Argument(...)`). Flagging them repo-wide would bury actual
+# B008 issues without any fix available. B904 too: CLI handlers
+# deliberately convert exceptions to `typer.Exit(1)` to hide tracebacks
+# from end users — `from exc` would re-attach the chain.
+"asrbench/cli/**" = ["B008", "B904"]
+"asrbench/api/runs.py" = ["B008"]  # FastAPI Query / Body defaults
+"asrbench/api/optimization.py" = ["B008"]
+# Library default: the TwoStageConfig factory is cheap and
+# instantiating it inside the function body would clutter every
+# caller site without changing behaviour.
+"asrbench/engine/two_stage.py" = ["B008"]
+# Built Vite bundle is generated code; never lint it.
+"asrbench/static/**" = ["ALL"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["asrbench"]
 
 [tool.mypy]
 python_version      = "3.11"
 strict              = false
 ignore_missing_imports = true
+# Progressive tightening knobs. Each one catches a class of regression
+# without requiring a repo-wide annotation sweep right now:
+warn_unused_configs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_return_any = true
+strict_equality = true
+no_implicit_optional = true
+
+[[tool.mypy.overrides]]
+# Tests intentionally use untyped fixtures and kwargs-heavy helpers.
+module = ["tests.*"]
+disallow_untyped_defs = false
+check_untyped_defs = false
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

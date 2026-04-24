@@ -177,7 +177,7 @@ class ParamSpec:
         if self.type == "float":
             return max(float(self.min), min(float(self.max), float(value)))
         if self.type == "int":
-            v = int(round(value))
+            v = round(value)
             return max(int(self.min), min(int(self.max), v))
         if self.type == "bool":
             return bool(value)
@@ -226,8 +226,10 @@ class ParameterSpace:
     def get(self, name: str) -> ParamSpec:
         try:
             return self._by_name[name]  # type: ignore[attr-defined]
-        except KeyError:
-            raise KeyError(f"Parameter '{name}' not found in space. Available: {self.names}")
+        except KeyError as exc:
+            raise KeyError(
+                f"Parameter '{name}' not found in space. Available: {self.names}"
+            ) from exc
 
     def defaults(self) -> dict[str, Any]:
         """Return {name: default} for all parameters — the screening baseline."""

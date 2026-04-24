@@ -26,7 +26,7 @@ app = typer.Typer(help="Statistical-power helper for benchmark planning.")
 
 
 @app.callback()
-def _callback() -> None:  # noqa: F841 — registered by @app.callback()
+def _callback() -> None:
     """
     Keep the ``suggest`` subcommand addressable.
 

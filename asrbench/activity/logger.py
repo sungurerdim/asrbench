@@ -19,7 +19,7 @@ from asrbench.engine.events import get_event_bus
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["log_activity", "ActivityLogger"]
+__all__ = ["ActivityLogger", "log_activity"]
 
 _ACTIVITY_TOPIC = "activity"
 
@@ -104,4 +104,7 @@ class ActivityLogger:
             # Not inside an event loop — stderr is already written; skip
             # the async broadcast. Pure-CLI callers do not need live fan-out.
             return
-        loop.create_task(get_event_bus().publish(_ACTIVITY_TOPIC, record))
+        # Fire-and-forget on purpose — the sync caller has no context to
+        # await the coroutine, and if the publish fails we've already
+        # written the record to stderr so observability is preserved.
+        loop.create_task(get_event_bus().publish(_ACTIVITY_TOPIC, record))  # noqa: RUF006

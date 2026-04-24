@@ -11,6 +11,7 @@ for CUDA fork-safety on Linux, default on Windows/macOS).
 
 from __future__ import annotations
 
+import contextlib
 import gc
 import importlib.metadata
 import logging
@@ -122,17 +123,13 @@ def _worker(backend_name: str, child_conn: Connection) -> None:
                 child_conn.send(("error", traceback.format_exc()))
 
     except Exception:
-        try:
+        with contextlib.suppress(Exception):
             child_conn.send(("error", traceback.format_exc()))
-        except Exception:
-            pass
     finally:
         # Aggressive cleanup
         if backend is not None:
-            try:
+            with contextlib.suppress(Exception):
                 backend.unload()
-            except Exception:
-                pass
         gc.collect()
         try:
             import torch
@@ -263,8 +260,6 @@ class SubprocessBackend(BaseBackend):
             self._proc = None
 
         if self._parent_conn is not None:
-            try:
+            with contextlib.suppress(OSError):
                 self._parent_conn.close()
-            except OSError:
-                pass
             self._parent_conn = None

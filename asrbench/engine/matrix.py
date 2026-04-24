@@ -60,7 +60,7 @@ class MatrixBuilder:
         runs: list[MatrixRun] = []
         for combo_index, combo in enumerate(itertools.product(*value_lists)):
             params: dict[str, Any] = {**default_params}
-            for name, val in zip(names, combo):
+            for name, val in zip(names, combo, strict=False):
                 params[name] = val
             runs.append(
                 MatrixRun(

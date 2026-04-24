@@ -78,10 +78,8 @@ class EventBus:
             try:
                 queue.put_nowait(event)
             except asyncio.QueueFull:
-                try:
+                with contextlib.suppress(asyncio.QueueEmpty):
                     _ = queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    pass
                 try:
                     queue.put_nowait(event)
                 except asyncio.QueueFull:

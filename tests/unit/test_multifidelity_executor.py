@@ -32,11 +32,11 @@ class _FakeExecutor:
     def runs_used(self) -> int:
         return len(self.calls)
 
-    def evaluate(self, config, *, phase="unknown", reasoning=""):  # noqa: ARG002
+    def evaluate(self, config, *, phase="unknown", reasoning=""):
         self.calls.append(1.0)
         return _make_trial(self.score_at.get(1.0, 0.10), 1.0)
 
-    def evaluate_at_fraction(self, config, *, phase="unknown", reasoning="", fraction=1.0):  # noqa: ARG002
+    def evaluate_at_fraction(self, config, *, phase="unknown", reasoning="", fraction=1.0):
         self.calls.append(fraction)
         return _make_trial(self.score_at.get(fraction, 0.10), fraction)
 

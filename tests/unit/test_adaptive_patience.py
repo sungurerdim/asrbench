@@ -31,7 +31,7 @@ def _metrics(score: float) -> dict[str, float]:
     }
 
 
-def _flat(cfg: Mapping[str, Any]) -> Mapping[str, float]:  # noqa: ARG001
+def _flat(cfg: Mapping[str, Any]) -> Mapping[str, float]:
     return _metrics(0.10)
 
 

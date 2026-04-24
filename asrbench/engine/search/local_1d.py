@@ -261,7 +261,7 @@ def golden_section_search(
     # Adaptive patience: when the budget is nearly used up, stop sooner.
     # Scale linearly between 1 and 3 based on remaining fraction.
     remaining_ratio = budget.remaining / budget.hard_cap if budget.hard_cap else 1.0
-    adaptive_patience = max(1, int(round(3 * remaining_ratio)))
+    adaptive_patience = max(1, round(3 * remaining_ratio))
 
     for i in range(max_iterations):
         iterations = i + 1
@@ -447,7 +447,7 @@ def pattern_search(
     # cap the outer loop more tightly so we don't burn the remainder on a
     # step-halving cascade that won't escape.
     remaining_ratio = budget.remaining / budget.hard_cap if budget.hard_cap else 1.0
-    effective_max = max(1, int(round(max_iterations * max(remaining_ratio, 0.25))))
+    effective_max = max(1, round(max_iterations * max(remaining_ratio, 0.25)))
 
     for i in range(effective_max):
         iterations = i + 1

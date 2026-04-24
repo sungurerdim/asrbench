@@ -19,7 +19,7 @@ def _build_app(rpm: int = 2, burst: int = 2) -> FastAPI:
     app.add_middleware(RateLimitMiddleware, requests_per_minute=rpm, burst=burst)
 
     @app.get("/runs/status/{run_id}")
-    async def runs_status(run_id: str) -> dict:  # noqa: ARG001
+    async def runs_status(run_id: str) -> dict:
         return {"ok": True}
 
     @app.post("/runs/start")
@@ -27,7 +27,7 @@ def _build_app(rpm: int = 2, burst: int = 2) -> FastAPI:
         return {"ok": True}
 
     @app.get("/optimize/{study_id}")
-    async def optimize_get(study_id: str) -> dict:  # noqa: ARG001
+    async def optimize_get(study_id: str) -> dict:
         return {"ok": True}
 
     @app.post("/optimize/start")

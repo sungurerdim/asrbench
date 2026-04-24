@@ -6,7 +6,7 @@ import functools
 import logging
 import re
 import unicodedata
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 from jiwer import process_characters, process_words
@@ -173,8 +173,8 @@ class WEREngine:
     Default (all other langs): BasicTextNormalizer → lowercase
     """
 
-    _DATA_LEAKAGE_MODELS = {"whisper", "openai-whisper"}
-    _DATA_LEAKAGE_DATASETS = {"librispeech", "fleurs"}
+    _DATA_LEAKAGE_MODELS: ClassVar[frozenset[str]] = frozenset({"whisper", "openai-whisper"})
+    _DATA_LEAKAGE_DATASETS: ClassVar[frozenset[str]] = frozenset({"librispeech", "fleurs"})
 
     def compute(
         self,

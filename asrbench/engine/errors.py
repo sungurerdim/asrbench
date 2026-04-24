@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Final
 
-__all__ = ["sanitize_error", "MAX_ERROR_MESSAGE_LENGTH"]
+__all__ = ["MAX_ERROR_MESSAGE_LENGTH", "sanitize_error"]
 
 
 MAX_ERROR_MESSAGE_LENGTH: Final[int] = 500

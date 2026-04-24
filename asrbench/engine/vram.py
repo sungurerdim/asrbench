@@ -19,9 +19,9 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "ResourceExhausted",
     "VRAMMonitor",
     "VRAMSnapshot",
-    "ResourceExhausted",
     "get_vram_monitor",
 ]
 

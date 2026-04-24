@@ -24,6 +24,7 @@ where isolation matters.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from typing import TYPE_CHECKING
 
@@ -79,10 +80,8 @@ def reset() -> None:
     """Close the singleton connection and clear the reference (for tests)."""
     global _conn
     if _conn is not None:
-        try:
+        with contextlib.suppress(Exception):
             _conn.close()
-        except Exception:
-            pass
         _conn = None
 
 
@@ -101,11 +100,10 @@ def init_db(conn: duckdb.DuckDBPyConnection) -> None:
         )
     """)
 
-    # Idempotent migration for existing databases
-    try:
+    # Idempotent migration for existing databases — CatalogException fires
+    # when the column already exists, which is fine on every non-fresh DB.
+    with contextlib.suppress(duckdb.CatalogException):
         conn.execute("ALTER TABLE datasets ADD COLUMN max_duration_s DOUBLE")
-    except duckdb.CatalogException:
-        pass  # column already exists
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS models (
@@ -140,10 +138,8 @@ def init_db(conn: duckdb.DuckDBPyConnection) -> None:
         ("cancel_requested", "BOOLEAN DEFAULT false"),
         ("error_message", "VARCHAR"),
     ]:
-        try:
+        with contextlib.suppress(duckdb.CatalogException):
             conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {col_type}")
-        except duckdb.CatalogException:
-            pass  # column already exists
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS segments (
@@ -174,10 +170,8 @@ def init_db(conn: duckdb.DuckDBPyConnection) -> None:
     """)
 
     # Idempotent migration: wil_mean added in v0.2 for correct WIL aggregation.
-    try:
+    with contextlib.suppress(duckdb.CatalogException):
         conn.execute("ALTER TABLE aggregates ADD COLUMN wil_mean DOUBLE")
-    except duckdb.CatalogException:
-        pass  # column already exists
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS optimization_studies (
@@ -212,10 +206,8 @@ def init_db(conn: duckdb.DuckDBPyConnection) -> None:
         ("error_message", "VARCHAR"),
         ("cancel_requested", "BOOLEAN DEFAULT false"),
     ]:
-        try:
+        with contextlib.suppress(duckdb.CatalogException):
             conn.execute(f"ALTER TABLE optimization_studies ADD COLUMN {col} {col_type}")
-        except duckdb.CatalogException:
-            pass  # column already exists
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS optimization_trials (

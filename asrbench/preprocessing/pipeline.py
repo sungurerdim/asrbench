@@ -84,7 +84,7 @@ class PreprocessingPipeline:
                     "available (%s); falling back to scipy.",
                     exc,
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 # Any runtime ffmpeg failure (bad filter chain, broken pipe)
                 # degrades gracefully. The fallback keeps the benchmark
                 # moving; the log line is the audit trail.

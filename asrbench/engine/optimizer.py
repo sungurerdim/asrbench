@@ -306,7 +306,7 @@ class IAMSOptimizer:
             effective_candidates = 1
             reasoning.append("Layer 3 found no interactions — reducing multi-start to 1 candidate")
         promising_sorted = sorted(promising, key=lambda t: t.score)[:effective_candidates]
-        start_trials = [layer2.final_trial] + promising_sorted
+        start_trials = [layer2.final_trial, *promising_sorted]
         if self._mf_executor is not None:
             self._mf_executor.set_incumbent(best.score)
         multi = MultiStartSequentialDescent(
