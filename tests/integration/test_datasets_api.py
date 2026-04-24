@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from tests.integration.conftest import insert_dataset, insert_model, insert_run
@@ -132,10 +134,30 @@ class TestDeleteDataset:
 
         assert app_client.get("/datasets").json() == []
 
-    def test_delete_with_delete_files_flag(self, app_client: TestClient) -> None:
-        """delete_files=true should succeed even when cache dir does not exist."""
+    def test_delete_with_delete_files_flag_inside_whitelist(
+        self, app_client: TestClient, tmp_path: Path
+    ) -> None:
+        """delete_files=true with a path under the whitelist must succeed."""
+        allowed = str(tmp_path / ".asrbench" / "cache" / "custom-ds")
+        dataset_id = insert_dataset(local_path=allowed)
+
+        resp = app_client.delete(f"/datasets/{dataset_id}?delete_files=true")
+        # Succeeds even if the cache dir does not exist — we just unregister.
+        assert resp.status_code == 204, resp.text
+
+    def test_delete_with_delete_files_flag_outside_whitelist_rejected(
+        self, app_client: TestClient
+    ) -> None:
+        """A dataset row pointing outside the whitelist must not be unlinked.
+
+        The row itself can still be deleted without ``delete_files=true``.
+        """
         dataset_id = insert_dataset(local_path="/nonexistent/path")
 
         resp = app_client.delete(f"/datasets/{dataset_id}?delete_files=true")
-        # Should succeed even if cache path doesn't exist
-        assert resp.status_code == 204
+        assert resp.status_code == 400
+        assert "allowed roots" in resp.json()["detail"].lower()
+
+        # Unregistering without delete_files must still succeed.
+        resp2 = app_client.delete(f"/datasets/{dataset_id}")
+        assert resp2.status_code == 204

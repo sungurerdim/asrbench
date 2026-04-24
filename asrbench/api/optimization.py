@@ -36,6 +36,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from asrbench.db import get_conn
+from asrbench.engine.errors import sanitize_error
 
 if TYPE_CHECKING:
     from asrbench.engine.search.objective import Objective
@@ -932,14 +933,11 @@ async def _run_study_background(
             result.total_trials,
         )
     except Exception as exc:
-        import traceback
-
-        err_msg = f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
         logger.error("Study %s failed: %s", study_id, exc, exc_info=True)
         cur.execute(
             "UPDATE optimization_studies SET status = 'failed', finished_at = now(), "
             "error_message = ? WHERE study_id = ?",
-            [err_msg[:4000], study_id],
+            [sanitize_error(exc), study_id],
         )
 
 
@@ -1110,9 +1108,7 @@ async def _run_two_stage_background(
             result.stage2.total_trials,
         )
     except Exception as exc:
-        import traceback
-
-        err_msg = f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
+        err_msg = sanitize_error(exc)
         logger.error(
             "Two-stage %s failed at stage %s: %s",
             stage2_study_id,
@@ -1130,7 +1126,7 @@ async def _run_two_stage_background(
                 cur.execute(
                     "UPDATE optimization_studies SET status = 'failed', "
                     "finished_at = now(), error_message = ? WHERE study_id = ?",
-                    [err_msg[:4000], sid],
+                    [err_msg, sid],
                 )
 
 
@@ -1325,9 +1321,7 @@ async def _run_global_config_background(
             len(req.datasets),
         )
     except Exception as exc:
-        import traceback
-
-        err_msg = f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
+        err_msg = sanitize_error(exc)
         logger.error(
             "Global-config %s failed at stage %s: %s",
             stage2_study_id,
@@ -1344,7 +1338,7 @@ async def _run_global_config_background(
                 cur.execute(
                     "UPDATE optimization_studies SET status = 'failed', "
                     "finished_at = now(), error_message = ? WHERE study_id = ?",
-                    [err_msg[:4000], sid],
+                    [err_msg, sid],
                 )
 
 

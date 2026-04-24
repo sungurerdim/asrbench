@@ -26,15 +26,64 @@ log warning so CI environments without FFmpeg don't break.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from typing import Any
 
 import numpy as np
 
+# Allow-list for string-valued params that could theoretically reach the
+# filter chain. Each pattern is anchored and matches only characters that
+# are safe inside an ffmpeg filter_complex expression — letters, digits,
+# underscore, hyphen. ``format`` is the one string param wired today; the
+# check stays in place so adding new filters with string options does not
+# accidentally open an injection path.
+_SAFE_TOKEN_RE: re.Pattern[str] = re.compile(r"^[A-Za-z0-9_\-]+$")
+
+_STRING_PARAM_ALLOWLIST: dict[str, frozenset[str]] = {
+    "format": frozenset({"none", "opus_64k", "opus_32k", "opus_24k"}),
+}
+
 
 class FFmpegNotAvailable(RuntimeError):
     """Raised when the ``ffmpeg`` binary is not on PATH."""
+
+
+def _validate_string_params(params: dict[str, Any]) -> None:
+    """Reject string values that could inject into an ffmpeg filter chain.
+
+    Every numeric knob in :func:`build_filter_chain` is cast via ``int()``
+    or ``float()`` which already defeats injection. The remaining string
+    knobs (today: ``format``) are checked against an explicit allow-list
+    here so adding a new string parameter without also extending the
+    allow-list fails loudly instead of silently forwarding attacker input
+    into the subprocess command line.
+    """
+    for key, allowed in _STRING_PARAM_ALLOWLIST.items():
+        if key not in params:
+            continue
+        value = params[key]
+        if value is None:
+            continue
+        if not isinstance(value, str) or value not in allowed:
+            raise ValueError(
+                f"Invalid value for preprocess param {key!r}: {value!r}. "
+                f"Expected one of: {sorted(allowed)}."
+            )
+
+    # Defensive sweep: any *other* string value must at least be a safe
+    # token. This catches future filters that forget to extend the
+    # allow-list above.
+    for key, value in params.items():
+        if key in _STRING_PARAM_ALLOWLIST or value is None:
+            continue
+        if isinstance(value, str) and not _SAFE_TOKEN_RE.fullmatch(value):
+            raise ValueError(
+                f"Preprocess param {key!r} carries an unsafe string value "
+                f"({value!r}); only alphanumerics, underscore and hyphen are "
+                "permitted for string knobs reaching the ffmpeg backend."
+            )
 
 
 def is_ffmpeg_available() -> bool:
@@ -70,6 +119,8 @@ def build_filter_chain(params: dict[str, Any], *, sr: int) -> str:
     is needed the function returns an empty string; callers should skip
     the subprocess entirely in that case.
     """
+    _validate_string_params(params)
+
     filters: list[str] = []
 
     # 1. Codec simulation — not implemented here; caller should pre-encode

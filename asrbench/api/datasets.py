@@ -9,7 +9,7 @@ from pathlib import Path
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Response
 from pydantic import BaseModel
 
-from asrbench.api.validators import LocalPath
+from asrbench.api.validators import LocalPath, path_is_allowed
 from asrbench.db import get_conn
 
 logger = logging.getLogger(__name__)
@@ -222,6 +222,19 @@ async def delete_dataset(
         local_path = row[1]
         if local_path:
             path = Path(str(local_path))
+            # Defense in depth: LocalPath validates at registration, but a
+            # row could predate the whitelist (migration, restored backup).
+            # Refuse to unlink anything outside the allow-list.
+            if not path_is_allowed(path):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Refusing to delete files at {path!s}: path is outside "
+                        "the allowed roots (~/.asrbench plus ASRBENCH_ALLOWED_PATHS). "
+                        "Unregister the dataset without delete_files=true and "
+                        "remove the files manually."
+                    ),
+                )
             if path.exists():
                 try:
                     if path.is_dir():

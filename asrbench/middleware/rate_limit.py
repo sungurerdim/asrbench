@@ -10,7 +10,17 @@ middleware works even without a config file.
 
 Exemptions:
     - WebSocket upgrades are NOT rate-limited (they're long-lived connections)
-    - GET /system/health is NOT rate-limited (monitoring probes)
+    - GET /system/health and GET /system/vram are NOT rate-limited
+      (monitoring probes)
+    - GET /runs/... and GET /optimize/... polling is NOT rate-limited
+      (the UI refreshes detail panes every second or two while a job is
+      in flight; the default 120 req/min bucket would 429 any moderately
+      active dashboard)
+
+Mutating endpoints (POST /runs/start, POST /optimize/start,
+POST /datasets/fetch, POST /models/register, DELETE /*) always remain
+subject to the limiter, even under the exempt prefixes, so a stolen or
+leaked API key cannot be used to spam expensive jobs.
 """
 
 from __future__ import annotations
@@ -22,20 +32,30 @@ from dataclasses import dataclass
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-# Paths exempt from rate limiting (exact match after stripping trailing slash).
-_EXEMPT_PATHS = frozenset({"/system/health", "/system/vram"})
+_EXEMPT_EXACT: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("GET", "/system/health"),
+        ("GET", "/system/vram"),
+    }
+)
 
-# Path prefixes exempt from rate limiting. The UI polls /runs/<id> and
-# /optimize/<id> while a job is in flight to refresh the detail pane; the
-# default 120 req/min bucket would trip on any moderately active dashboard
-# and return 429s that the user would never be able to fix from the UI.
-_EXEMPT_PREFIXES: tuple[str, ...] = ("/runs/", "/optimize/")
+_EXEMPT_PREFIX_RULES: tuple[tuple[str, str], ...] = (
+    ("GET", "/runs/"),
+    ("GET", "/optimize/"),
+)
 
 
-def _is_exempt_prefix(path: str) -> bool:
-    """Return True when ``path`` falls under a polling-exempt prefix."""
-    for prefix in _EXEMPT_PREFIXES:
-        if path.startswith(prefix):
+def _is_exempt(method: str, path: str) -> bool:
+    """Return True when (method, path) matches a polling-exempt rule.
+
+    Only GET requests under the /runs/ and /optimize/ prefixes are exempt;
+    the POST /runs/start and POST /optimize/start endpoints fall through
+    to the limiter so a client cannot spam benchmark starts.
+    """
+    if (method, path) in _EXEMPT_EXACT:
+        return True
+    for exempt_method, prefix in _EXEMPT_PREFIX_RULES:
+        if method == exempt_method and path.startswith(prefix):
             return True
     return False
 
@@ -84,8 +104,9 @@ class RateLimitMiddleware:
             await self.app(scope, receive, send)
             return
 
+        method = str(scope.get("method", "GET")).upper()
         path = scope.get("path", "").rstrip("/")
-        if path in _EXEMPT_PATHS or _is_exempt_prefix(path):
+        if _is_exempt(method, path):
             await self.app(scope, receive, send)
             return
 

@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import logging
+import os
+import sys
 
 import typer
+
+from asrbench.middleware.auth import LOOPBACK_HOSTS
 
 logger = logging.getLogger(__name__)
 
@@ -18,9 +22,20 @@ def serve(
         "--open/--no-open",
         help="Open the UI in the default browser once the server is up.",
     ),
+    allow_network: bool = typer.Option(
+        False,
+        "--allow-network",
+        help=(
+            "Required to bind to a non-loopback host. The server will only "
+            "start when ASRBENCH_API_KEY is set so remote clients must "
+            "present a matching X-API-Key header."
+        ),
+    ),
 ) -> None:
     """Start the ASRbench API server."""
     import uvicorn
+
+    _enforce_network_policy(host=host, allow_network=allow_network)
 
     if open_browser:
         _schedule_browser_open(host, port)
@@ -32,6 +47,45 @@ def serve(
         port=port,
         reload=reload,
     )
+
+
+def _enforce_network_policy(*, host: str, allow_network: bool) -> None:
+    """Abort startup when the requested bind address leaks auth or scope.
+
+    Binding to anything other than loopback exposes ASRbench to the local
+    network. That is only safe when (a) the user explicitly asked for it
+    with ``--allow-network`` and (b) an API key is configured so the new
+    HTTP/WS surface is not unauthenticated.
+
+    Fails loud with exit code 1 rather than silently binding, because a
+    running tool is much harder to unwind than a refusal to start.
+    """
+    if host in LOOPBACK_HOSTS:
+        return
+
+    if not allow_network:
+        typer.secho(
+            (
+                f"Refusing to bind to {host!r}: non-loopback hosts require "
+                "--allow-network. Re-run with --allow-network (and set "
+                "ASRBENCH_API_KEY) if you really want to expose this instance."
+            ),
+            err=True,
+            fg=typer.colors.RED,
+        )
+        sys.exit(1)
+
+    if not os.environ.get("ASRBENCH_API_KEY", "").strip():
+        typer.secho(
+            (
+                "--allow-network requires the ASRBENCH_API_KEY environment "
+                "variable. Set it to a long random string (at least 32 bytes "
+                "of entropy) before starting the server."
+            ),
+            err=True,
+            fg=typer.colors.RED,
+        )
+        sys.exit(1)
 
 
 def _schedule_browser_open(host: str, port: int) -> None:

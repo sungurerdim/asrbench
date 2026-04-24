@@ -12,11 +12,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from asrbench import __version__
 from asrbench.api import datasets, models, optimization, runs, system, ws
 from asrbench.config import get_config
+from asrbench.middleware.auth import LOOPBACK_HOSTS, AuthMiddleware, get_api_key
 from asrbench.middleware.rate_limit import RateLimitMiddleware
 
 logger = logging.getLogger(__name__)
-
-_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 _LOCAL_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$"
 
@@ -27,13 +26,20 @@ async def _lifespan(_app: FastAPI) -> AsyncGenerator[None]:  # noqa: ARG001
     from asrbench.db import get_conn, reset
 
     cfg = get_config()
-    if cfg.server.host not in _LOOPBACK_HOSTS:
-        logger.warning(
-            "Binding to %s exposes ASRbench to the network. This is a single-user "
-            "local tool with no authentication; set server.host to 127.0.0.1 in "
-            "~/.asrbench/config.toml unless you understand the risk.",
-            cfg.server.host,
-        )
+    if cfg.server.host not in LOOPBACK_HOSTS:
+        if get_api_key() is None:
+            logger.error(
+                "Server is bound to %s but ASRBENCH_API_KEY is not set. "
+                "Every remote request will be rejected with 401. Set the "
+                "env var and restart, or re-bind to 127.0.0.1.",
+                cfg.server.host,
+            )
+        else:
+            logger.warning(
+                "ASRbench is reachable at %s. AuthMiddleware will reject any "
+                "non-loopback client that does not present X-API-Key.",
+                cfg.server.host,
+            )
 
     logger.info("ASRbench %s starting up — initializing database", __version__)
     get_conn()  # triggers init_db via connect()
@@ -51,14 +57,20 @@ def create_app() -> FastAPI:
         lifespan=_lifespan,
     )
 
+    # FastAPI wraps middleware in reverse registration order — the newest
+    # call becomes the outermost wrapper. Request order is therefore:
+    # AuthMiddleware (last added) → RateLimitMiddleware → CORSMiddleware
+    # (first added) → handler. Auth must be outermost so unauthenticated
+    # remote clients never burn rate-limit tokens.
     app.add_middleware(
         CORSMiddleware,
         allow_origin_regex=_LOCAL_ORIGIN_REGEX,
         allow_credentials=False,
         allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
-        allow_headers=["*"],
+        allow_headers=["*", "X-API-Key"],
     )
     app.add_middleware(RateLimitMiddleware)
+    app.add_middleware(AuthMiddleware)
 
     app.include_router(system.router)
     app.include_router(datasets.router)
