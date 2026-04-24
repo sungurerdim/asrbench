@@ -161,6 +161,8 @@ ignore = [
 "asrbench/engine/two_stage.py" = ["B008"]
 # Built Vite bundle is generated code; never lint it.
 "asrbench/static/**" = ["ALL"]
+# Developer-only throwaway benchmark scripts — not part of the package.
+"scripts/benchmarks/**" = ["E501"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["asrbench"]

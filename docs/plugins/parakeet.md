@@ -1,95 +1,82 @@
-# Parakeet plugin
+# Parakeet backend
 
-NVIDIA's Parakeet family is not shipped with the core `asrbench`
-package because NeMo Toolkit pulls in >2 GB of ASR dependencies and
-couples tightly to the host CUDA runtime. This guide shows how to
-publish Parakeet as a third-party plugin that ASRbench discovers via
-`importlib.metadata` entry points.
+NVIDIA Parakeet is a production ASR family (TDT / CTC / RNN-T variants)
+served through the NeMo toolkit. ASRbench ships Parakeet as the
+`parakeet` backend, registered via an entry point under
+`asrbench.backends` but requiring the optional `parakeet` extra at
+install time.
 
-## 1. Project layout
-
-```
-asrbench-parakeet/
-  pyproject.toml
-  src/asrbench_parakeet/__init__.py
-  src/asrbench_parakeet/backend.py
-```
-
-## 2. `pyproject.toml`
-
-```toml
-[project]
-name = "asrbench-parakeet"
-version = "0.1.0"
-requires-python = ">=3.11"
-dependencies = [
-    "asrbench>=0.2",
-    "nemo_toolkit[asr]>=2.2,<3.0",
-]
-
-[project.entry-points."asrbench.backends"]
-parakeet = "asrbench_parakeet.backend:ParakeetBackend"
-```
-
-## 3. Backend implementation
-
-```python
-# src/asrbench_parakeet/backend.py
-from __future__ import annotations
-
-from typing import Any
-
-import numpy as np
-
-from asrbench.backends.base import BaseBackend, Segment
-
-
-class ParakeetBackend(BaseBackend):
-    family = "parakeet"
-    name = "parakeet"
-
-    def __init__(self) -> None:
-        self._model: Any = None
-
-    def default_params(self) -> dict:
-        return {"decode_mode": "rnnt"}
-
-    def load(self, model_path: str, params: dict) -> None:
-        import nemo.collections.asr as nemo_asr
-
-        self._model = nemo_asr.models.EncDecRNNTBPEModel.restore_from(model_path)
-
-    def unload(self) -> None:
-        self._model = None
-
-    def transcribe(
-        self, audio: np.ndarray, lang: str, params: dict
-    ) -> list[Segment]:
-        if self._model is None:
-            raise RuntimeError("ParakeetBackend.load() must be called first.")
-        # NeMo expects a list of audio signals or file paths. Keep the
-        # implementation minimal — real drivers add VAD, chunking, etc.
-        texts = self._model.transcribe([audio])
-        return [Segment(offset_s=0.0, duration_s=len(audio) / 16000.0,
-                        ref_text="", hyp_text=texts[0])]
-```
-
-## 4. Install + register
+## Install
 
 ```bash
-pip install ./asrbench-parakeet
-asrbench doctor        # should now list "parakeet" as an installed backend
+pip install 'asrbench[parakeet]'
 ```
 
-Once installed, ASRbench picks the plugin up automatically — no core
-code change required. Any REST call, CLI subcommand, or optimizer study
-that accepts a `backend` name can now use `parakeet`.
+The extra pulls:
 
-## 5. Testing advice
+| Package | Version | License |
+|---------|---------|---------|
+| `nemo_toolkit[asr]` | `>=1.23,<2.0` | Apache-2.0 |
+| `torch` | `>=2.1,<3.0` | BSD-3-Clause |
+| `omegaconf` | `>=2.3,<3.0` | BSD-3-Clause |
 
-- Mirror `tests/unit/test_faster_whisper_backend.py` for the backend
-  contract tests.
-- Use `importorskip("nemo.collections.asr")` so CI can collect without
-  NeMo installed.
-- Pin `nemo_toolkit` to the version you actually validated against —
-  the NeMo API moves between minors.
+The NeMo install is CUDA-coupled; follow the upstream
+[NeMo install guide](https://github.com/NVIDIA/NeMo) for platform-specific
+hints if the default wheel doesn't match your CUDA version.
+
+## Licensing
+
+* NeMo runtime: **Apache-2.0** — commercial use permitted.
+* Parakeet checkpoints on NGC / HuggingFace: **CC-BY-4.0** — commercial
+  use permitted with attribution. Double-check the model card before
+  shipping the tuned output in a paid product.
+
+## Example
+
+Register a Parakeet model (HuggingFace IDs work directly; NeMo pulls
+the weights on first load):
+
+```bash
+asrbench models register \
+  --family parakeet \
+  --name parakeet-tdt-0.6b \
+  --backend parakeet \
+  --local-path nvidia/parakeet-tdt-0.6b
+```
+
+Run a benchmark:
+
+```bash
+asrbench run \
+  --backend parakeet \
+  --model parakeet-tdt-0.6b \
+  --dataset librispeech-dev-clean-100 \
+  --segments 20
+```
+
+## Supported parameters
+
+The IAMS optimizer can search over:
+
+| Param | Type | Default | Notes |
+|-------|------|---------|-------|
+| `beam_size` | int | 1 | Beam width for TDT / RNN-T decoders. |
+| `decoder_type` | str | `greedy` | `greedy`, `beam`, or `beam_maes`. |
+| `batch_size` | int | 1 | Parallel transcribe batch. |
+| `compute_type` | str | `float16` | `float32`, `float16`, `bfloat16`. |
+
+## VRAM footprint
+
+Rough per-model estimates that the `VRAMMonitor.require_capacity` guard
+uses to refuse obviously-too-big loads:
+
+| Model | Approx fp16 VRAM |
+|-------|------------------|
+| `parakeet-ctc-0.6b` | ~1.1 GB |
+| `parakeet-tdt-0.6b` | ~1.5 GB |
+| `parakeet-rnnt-0.6b` | ~1.5 GB |
+| `parakeet-ctc-1.1b` | ~2.2 GB |
+| `parakeet-tdt-1.1b` | ~2.8 GB |
+| `parakeet-rnnt-1.1b` | ~2.8 GB |
+
+Double the number for `compute_type=float32`.

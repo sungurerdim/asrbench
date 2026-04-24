@@ -1,89 +1,85 @@
-# Qwen-ASR plugin
+# Qwen-Audio backend
 
-Qwen2-Audio and the downstream Qwen-ASR variants run on HuggingFace
-Transformers + PyTorch. Both dependencies are large (PyTorch alone is
-~2 GB with CUDA) and their version coupling varies by GPU, so
-ASRbench ships Qwen-ASR as a third-party plugin rather than a core
-backend. The plugin wiring is identical to
-[Parakeet](./parakeet.md) — this file only shows the class body, since
-the rest of the scaffolding (`pyproject.toml`, entry point registration)
-is mechanically the same.
+Qwen2-Audio is Alibaba's multimodal speech+text LLM. ASRbench uses it
+for transcription via a fixed chat template that constrains the model
+to emit nothing but the verbatim transcript. The backend ships as the
+`qwen_asr` entry point but requires the `qwen` extra to install its
+heavyweight deps.
 
-## Backend implementation
+## ⚠ License warning
 
-```python
-# src/asrbench_qwen/backend.py
-from __future__ import annotations
+Qwen2-Audio is released under the **Qwen Community License** (not an
+OSI-approved open license). Key restrictions:
 
-import numpy as np
+* Commercial use is permitted only under monthly-active-user caps
+  spelled out in the license text.
+* You must include the full license and a notice of modifications
+  when redistributing weights or derived products.
+* The license terms evolve with the model family — re-read the
+  upstream file for your specific checkpoint before shipping.
 
-from asrbench.backends.base import BaseBackend, Segment
+Read the full text at
+<https://github.com/QwenLM/Qwen2-Audio/blob/main/LICENSE>.
 
+ASRbench makes this explicit:
+* The `qwen` extra is **opt-in** — a default install carries no Qwen
+  code.
+* `asrbench doctor` flags the `transformers` check with the same
+  warning when the extra is installed.
+* This page and `THIRD-PARTY-LICENSES.md` surface the restriction at
+  every entry point into the backend.
 
-class QwenASRBackend(BaseBackend):
-    family = "qwen"
-    name = "qwen-asr"
+## Install
 
-    def __init__(self) -> None:
-        self._processor = None
-        self._model = None
-        self._device: str = "cuda"
-
-    def default_params(self) -> dict:
-        return {"max_new_tokens": 128, "do_sample": False}
-
-    def load(self, model_path: str, params: dict) -> None:
-        import torch
-        from transformers import AutoModelForCausalLM, AutoProcessor
-
-        self._device = "cuda" if torch.cuda.is_available() else "cpu"
-        self._processor = AutoProcessor.from_pretrained(model_path)
-        self._model = AutoModelForCausalLM.from_pretrained(
-            model_path,
-            torch_dtype="auto",
-        ).to(self._device)
-
-    def unload(self) -> None:
-        self._processor = None
-        self._model = None
-
-    def transcribe(self, audio: np.ndarray, lang: str, params: dict) -> list[Segment]:
-        if self._model is None or self._processor is None:
-            raise RuntimeError("QwenASRBackend.load() must be called first.")
-        import torch
-
-        inputs = self._processor(
-            audios=audio, sampling_rate=16000, return_tensors="pt"
-        ).to(self._device)
-        with torch.inference_mode():
-            ids = self._model.generate(**inputs, **params)
-        text = self._processor.batch_decode(ids, skip_special_tokens=True)[0]
-        return [
-            Segment(
-                offset_s=0.0,
-                duration_s=len(audio) / 16000.0,
-                ref_text="",
-                hyp_text=text,
-            )
-        ]
+```bash
+pip install 'asrbench[qwen]'
 ```
 
-## `pyproject.toml` entry point
+| Package | Version | License |
+|---------|---------|---------|
+| `transformers` | `>=4.45,<5.0` | Apache-2.0 |
+| `torch` | `>=2.1,<3.0` | BSD-3-Clause |
+| `accelerate` | `>=0.30,<2.0` | Apache-2.0 |
+| `librosa` | `>=0.10,<1.0` | ISC |
 
-```toml
-[project.entry-points."asrbench.backends"]
-qwen-asr = "asrbench_qwen.backend:QwenASRBackend"
+Model weights themselves are distributed under the Qwen Community License
+— not through the Python extra.
+
+## Example
+
+```bash
+asrbench models register \
+  --family qwen \
+  --name qwen2-audio-7b-instruct \
+  --backend qwen_asr \
+  --local-path Qwen/Qwen2-Audio-7B-Instruct
+
+asrbench run \
+  --backend qwen_asr \
+  --model qwen2-audio-7b-instruct \
+  --dataset librispeech-dev-clean-100 \
+  --segments 10
 ```
 
-Install the plugin into the same environment as asrbench
-(`pip install ./asrbench-qwen`) and `asrbench doctor` will list it as an
-available backend.
+## Prompting
 
-## Testing advice
+The backend hardcodes a system prompt that disallows commentary, then
+assembles a single user turn containing an audio block plus the
+`Transcribe this audio.` instruction. This keeps the model's sampled
+output comparable to a plain ASR system.
 
-- `importorskip("transformers")` and `importorskip("torch")` so CI
-  hosts without these libraries can still collect the tests.
-- Pin `transformers` to a version that matches the Qwen model card you
-  target — tokenizer and model class layouts change between majors.
-- Qwen models usually expect 16 kHz mono float32 input, which is what
-  the ASRbench pipeline already produces; no extra resampling needed.
+## Supported parameters
+
+| Param | Type | Default | Notes |
+|-------|------|---------|-------|
+| `temperature` | float | `0.0` | Only flows through when `do_sample=True`. |
+| `top_p` | float | `1.0` | Only flows through when `do_sample=True`. |
+| `max_new_tokens` | int | `512` | Ceiling for the generated transcript. |
+| `do_sample` | bool | `False` | Set True for stochastic decoding experiments. |
+| `compute_type` | str | `bfloat16` | `float32`, `float16`, `bfloat16`. |
+
+## VRAM footprint
+
+`Qwen2-Audio-7B` / `Qwen2-Audio-7B-Instruct`: ~16 GB at fp16/bf16,
+~32 GB at fp32. The `VRAMMonitor.require_capacity` guard refuses to
+load when the GPU cannot fit the estimate + 10 % margin.

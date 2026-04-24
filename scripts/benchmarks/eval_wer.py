@@ -12,17 +12,7 @@ import time
 # ---------------------------------------------------------------------------
 random.seed(42)
 
-_VOCAB = (
-    "the quick brown fox jumps over lazy dog a an is was were been have has "
-    "hello world good morning afternoon evening today yesterday tomorrow "
-    "please thank you welcome sorry excuse me can could would should "
-    "running walking talking eating sleeping reading writing working "
-    "beautiful wonderful terrible amazing incredible fantastic great "
-    "computer science engineering mathematics physics chemistry biology "
-    "university student teacher professor doctor engineer scientist "
-    "government country president minister parliament congress senate "
-    "economy market business company industry technology innovation"
-).split()
+_VOCAB = ["the", "quick", "brown", "fox", "jumps", "over", "lazy", "dog", "a", "an", "is", "was", "were", "been", "have", "has", "hello", "world", "good", "morning", "afternoon", "evening", "today", "yesterday", "tomorrow", "please", "thank", "you", "welcome", "sorry", "excuse", "me", "can", "could", "would", "should", "running", "walking", "talking", "eating", "sleeping", "reading", "writing", "working", "beautiful", "wonderful", "terrible", "amazing", "incredible", "fantastic", "great", "computer", "science", "engineering", "mathematics", "physics", "chemistry", "biology", "university", "student", "teacher", "professor", "doctor", "engineer", "scientist", "government", "country", "president", "minister", "parliament", "congress", "senate", "economy", "market", "business", "company", "industry", "technology", "innovation"]
 
 
 def _make_pair(n_words: int, error_rate: float) -> tuple[str, str]:

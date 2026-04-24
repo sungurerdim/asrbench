@@ -1,220 +1,295 @@
-# API Reference
+# ASRbench API reference
 
-ASRbench REST API. Default: `http://localhost:8765`.
+Auto-generated from the live FastAPI OpenAPI schema (version `0.1.0`).
+Regenerate with `python scripts/gen_api_docs.py`.
 
-## System
-
-### `GET /system/health`
-
-Returns server status and version.
-
-**Response:** `{"status": "ok", "version": "0.1.0"}`
-
-### `GET /system/vram`
-
-Returns current GPU VRAM usage.
-
-**Response:**
-```json
-{"used_mb": 2048.0, "total_mb": 8192.0, "pct": 25.0, "available": true}
-```
-
-## Models
-
-### `GET /models`
-
-List registered models. Query params: `family`, `backend` (optional filters).
-
-### `POST /models`
-
-Register a new model.
-
-**Request:**
-```json
-{
-  "family": "whisper",
-  "name": "large-v3",
-  "backend": "faster-whisper",
-  "local_path": "/path/to/model",
-  "default_params": {"beam_size": 5},
-  "size_bytes": null
-}
-```
-
-### `POST /models/{model_id}/load`
-
-Load model into memory (VRAM). Returns VRAM snapshot after loading.
-
-### `POST /models/{model_id}/unload`
-
-Unload model from memory.
-
-## Datasets
+## datasets
 
 ### `GET /datasets`
 
-List datasets. Query params: `lang`, `source` (optional filters).
+**List Datasets**
+
+*Tags:* datasets
+
+List all registered datasets, optionally filtered by language and/or source.
+
+*Responses:* 200, 422
 
 ### `POST /datasets/fetch`
 
-Download a dataset from HuggingFace.
+**Fetch Dataset**
 
-**Request:**
-```json
-{
-  "source": "common_voice",
-  "lang": "en",
-  "split": "test",
-  "local_path": null
-}
-```
+*Tags:* datasets
 
-Sources: `common_voice`, `fleurs`, `yodas`, `ted_lium`, `custom`.
+Start fetching a dataset in the background.
+
+*Responses:* 202, 422
 
 ### `DELETE /datasets/{dataset_id}`
 
-Delete a dataset. Query param: `delete_files=true` to also remove audio files.
+**Delete Dataset**
 
-## Runs
+*Tags:* datasets
 
-### `POST /runs/start`
+Delete a dataset row and, optionally, its cached audio files.
 
-Start one or more benchmark runs (with matrix expansion).
+Returns 409 when at least one run references the dataset — delete or
+retry those runs first to avoid orphaning them.
 
-**Request:**
-```json
-{
-  "mode": "param_compare",
-  "model_id": "<uuid>",
-  "dataset_id": "<uuid>",
-  "lang": "en",
-  "matrix": {"beam_size": [1, 2, 4, 8]},
-  "baseline_run_id": null
-}
-```
+*Responses:* 204, 422
 
-**Response (202):**
-```json
-{
-  "run_ids": ["<uuid>", ...],
-  "baseline_run_id": "<uuid>",
-  "matrix_size": 4,
-  "estimated_runs": 4
-}
-```
+### `GET /datasets/{dataset_id}`
 
-### `GET /runs`
+**Get Dataset**
 
-List runs. Query params: `status`, `model_id`, `lang`, `limit` (default 50, max 500).
+*Tags:* datasets
 
-### `GET /runs/{run_id}`
+Return a single dataset's metadata.
 
-Get run details including aggregate metrics.
+*Responses:* 200, 422
 
-**Aggregate fields:** `wer_mean`, `cer_mean`, `mer_mean`, `rtfx_mean`, `rtfx_p95`, `vram_peak_mb`, `wall_time_s`, `word_count`, `wilcoxon_p`, `data_leakage_warning`, `wer_ci_lower`, `wer_ci_upper`.
 
-### `GET /runs/{run_id}/segments`
+## models
 
-Paginated segment-level results. Query params: `page` (default 1), `page_size` (default 100, max 1000).
+### `GET /models`
 
-### `GET /runs/compare?ids=uuid1,uuid2,...`
+**List Models**
 
-Compare N completed runs side-by-side with delta metrics and parameter diff.
+*Tags:* models
 
-### `POST /runs/{run_id}/cancel`
+List all registered models.
 
-Cancel a running benchmark.
+*Responses:* 200
 
-### `POST /runs/{run_id}/retry`
+### `POST /models`
 
-Clone a failed/cancelled run for re-execution.
+**Register Model**
 
-### `DELETE /runs/{run_id}`
+*Tags:* models
 
-Delete a run and its segments/aggregates. Cannot delete running runs.
+Register a new model. Idempotent — returns existing if name + backend match.
 
-### `GET /runs/{run_id}/export?fmt=json|csv`
+*Responses:* 201, 422
 
-Export run results. Supported formats: `json`, `csv`. (`pdf` planned.)
+### `POST /models/{model_id}/load`
 
-## Parameter Optimization (IAMS)
+**Load Model**
+
+*Tags:* models
+
+Load a model into GPU/CPU memory.
+
+*Responses:* 200, 422
+
+### `POST /models/{model_id}/unload`
+
+**Unload Model**
+
+*Tags:* models
+
+Unload a model from memory.
+
+*Responses:* 200, 422
+
+
+## optimize
+
+### `GET /optimize/`
+
+**List Studies**
+
+*Tags:* optimize
+
+List optimization studies, optionally filtered by status.
+
+*Responses:* 200, 422
+
+### `POST /optimize/global-config`
+
+**Start Global Config**
+
+*Tags:* optimize
+
+Start a two-stage IAMS run aggregated across N datasets.
+
+Every trial evaluates the candidate config on ALL listed datasets,
+weights the per-dataset scores, and returns one aggregate. IAMS's
+7-layer algorithm then produces a single global config that
+minimises the weighted mean across the fleet — use this when
+deploying to a product with a single shared preset.
+
+*Responses:* 202, 422
 
 ### `POST /optimize/start`
 
-Start an IAMS parameter optimization study.
+**Start Study**
 
-**Request:**
-```json
-{
-  "model_id": "<uuid>",
-  "dataset_id": "<uuid>",
-  "lang": "en",
-  "space": {
-    "parameters": {
-      "beam_size": {"type": "int", "min": 1, "default": 5, "max": 20},
-      "temperature": {"type": "float", "min": 0.0, "default": 0.0, "max": 1.0},
-      "vad_filter": {"type": "bool", "default": true}
-    }
-  },
-  "objective": {"type": "single", "metric": "wer", "direction": null},
-  "mode": "maximum",
-  "budget": {"hard_cap": 200, "convergence_eps": 0.005, "convergence_window": 3},
-  "eps_min": 0.005,
-  "top_k_pairs": 4,
-  "multistart_candidates": 3,
-  "validation_runs": 3,
-  "enable_deep_ablation": false
-}
-```
+*Tags:* optimize
 
-**Objective types:**
-- Single metric: `{"type": "single", "metric": "wer|cer|rtfx|vram", "direction": "minimize|maximize"}`
-- Weighted: `{"type": "weighted", "weights": {"wer": 1.0, "rtfx": -0.1}}`
+Create a single-dataset optimization study and kick off IAMS.
 
-**Accuracy modes:**
-- `fast` — Layers 1-2 only (screening + coordinate descent)
-- `balanced` — Layers 1-5 (adds interaction detection + ablation)
-- `maximum` — Layers 1-7 (full pipeline with validation)
+*Responses:* 202, 422
 
-**Parameter types:** `int` (min/max/step), `float` (min/max/step), `bool`, `enum` (values list).
+### `POST /optimize/two-stage`
 
-**Response (202):**
-```json
-{
-  "study_id": "<uuid>",
-  "status": "running",
-  "mode": "maximum",
-  "hard_cap": 200
-}
-```
+**Start Two Stage**
+
+*Tags:* optimize
+
+Start a coarse→fine two-stage optimization run.
+
+Creates two ``optimization_studies`` rows (one per stage) and runs
+both in sequence via the library's ``run_two_stage`` orchestrator.
+Budget/epsilon default to ``None`` — the library sizes them from the
+space and the stage duration when left unset.
+
+*Responses:* 202, 422
 
 ### `GET /optimize/{study_id}`
 
-Get study status and results.
+**Get Study**
 
-**Response fields:** `study_id`, `status`, `best_score`, `best_config`, `confidence` (HIGH/MEDIUM/LOW), `total_trials`, `reasoning` (per-layer explanations).
+*Tags:* optimize
+
+Return a single study's metadata and final result (if completed).
+
+*Responses:* 200, 422
+
+### `POST /optimize/{study_id}/cancel`
+
+**Cancel Study**
+
+*Tags:* optimize
+
+Force-cancel a stuck running or failed study.
+
+Marks status as 'cancelled' so a new study can start. Safe to call
+on a study whose background task has already died.
+
+*Responses:* 200, 422
 
 ### `GET /optimize/{study_id}/trials`
 
-Paginated trial log for audit. Query params: `page`, `page_size`, `phase` (filter by layer).
+**List Trials**
 
-**Trial fields:** `trial_id`, `run_id`, `phase`, `config`, `score`, `score_ci_lower`, `score_ci_upper`, `reasoning`.
+*Tags:* optimize
 
-## WebSocket Streams
+Paginated access to the full trial log for audit / UI replay.
 
-### `WS /ws/activity`
+*Responses:* 200, 422
 
-Live activity log stream. Sends JSON messages with `type: "activity"`.
 
-### `WS /ws/vram`
+## runs
 
-Live VRAM usage stream (2-second interval). Sends `{"type": "vram", "used_mb": ..., "total_mb": ..., "pct": ...}`.
+### `GET /runs`
 
-### `WS /ws/runs/{run_id}/live`
+**List Runs**
 
-Live benchmark progress for a specific run. Message types:
-- `segment` — per-segment progress with WER, RTFx, ETA
-- `complete` — final aggregate metrics
-- `error` — run failure
-- `cancelled` — run cancellation
-- `ping` — keepalive (every 30s)
+*Tags:* runs
+
+List runs with optional status/lang filters and a result cap.
+
+*Responses:* 200, 422
+
+### `GET /runs/compare`
+
+**Compare Runs**
+
+*Tags:* runs
+
+Compare metrics of two or more runs side by side.
+
+*Responses:* 200, 422
+
+### `POST /runs/start`
+
+**Start Run**
+
+*Tags:* runs
+
+Start a benchmark run in the background.
+
+*Responses:* 202, 422
+
+### `DELETE /runs/{run_id}`
+
+**Delete Run**
+
+*Tags:* runs
+
+Delete a run and all its segments/aggregates. Rejects in-flight runs.
+
+*Responses:* 204, 422
+
+### `GET /runs/{run_id}`
+
+**Get Run**
+
+*Tags:* runs
+
+Return a single run with aggregate metrics.
+
+*Responses:* 200, 422
+
+### `POST /runs/{run_id}/cancel`
+
+**Cancel Run**
+
+*Tags:* runs
+
+Request cancellation of an in-progress run.
+
+*Responses:* 200, 422
+
+### `GET /runs/{run_id}/export`
+
+**Export Run**
+
+*Tags:* runs
+
+Export a run's full results as JSON or CSV.
+
+*Responses:* 200, 422
+
+### `POST /runs/{run_id}/retry`
+
+**Retry Run**
+
+*Tags:* runs
+
+Re-run a failed or cancelled run with the same params; creates a new run row.
+
+*Responses:* 202, 422
+
+### `GET /runs/{run_id}/segments`
+
+**Get Segments**
+
+*Tags:* runs
+
+Paginated segment results for a run.
+
+*Responses:* 200, 422
+
+
+## system
+
+### `GET /system/health`
+
+**Health**
+
+*Tags:* system
+
+Liveness probe — always returns ok.
+
+*Responses:* 200
+
+### `GET /system/vram`
+
+**Vram**
+
+*Tags:* system
+
+Report GPU VRAM usage. Returns empty list if no GPU is available.
+
+*Responses:* 200
