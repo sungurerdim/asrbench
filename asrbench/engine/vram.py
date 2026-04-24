@@ -18,7 +18,22 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["VRAMMonitor", "VRAMSnapshot", "get_vram_monitor"]
+__all__ = [
+    "VRAMMonitor",
+    "VRAMSnapshot",
+    "ResourceExhausted",
+    "get_vram_monitor",
+]
+
+
+class ResourceExhausted(RuntimeError):
+    """Raised before a backend load that cannot fit in free VRAM.
+
+    The benchmark engine catches this in place of a generic RuntimeError
+    so the failing run is marked with a precise error message instead of
+    a mid-load CUDA OOM that would leave the process in an uncertain
+    state.
+    """
 
 
 @dataclass(frozen=True)
@@ -103,6 +118,61 @@ class VRAMMonitor:
         if not snap.available:
             return False
         return snap.pct >= threshold
+
+    def can_accommodate(
+        self,
+        required_mb: float,
+        *,
+        safety_margin_pct: float = 10.0,
+    ) -> bool:
+        """Return True when the GPU has enough free VRAM to load a model.
+
+        ``required_mb`` is the caller's best-effort estimate of the model
+        memory (backend-specific — e.g. whisper's param table × bytes per
+        element). ``safety_margin_pct`` defaults to 10 %, giving the
+        backend's own working buffers room to breathe before triggering
+        a real OOM.
+
+        When NVML is unavailable (CPU-only or no NVIDIA driver), returns
+        True so the CPU path still runs. A caller that wants a hard
+        guarantee should also check ``snapshot().available``.
+        """
+        if required_mb <= 0:
+            return True
+        snap = self.snapshot()
+        if not snap.available:
+            return True
+        margin = required_mb * (safety_margin_pct / 100.0)
+        return snap.free_mb >= (required_mb + margin)
+
+    def require_capacity(
+        self,
+        required_mb: float,
+        *,
+        model_label: str = "model",
+        safety_margin_pct: float = 10.0,
+    ) -> None:
+        """Raise :class:`ResourceExhausted` when ``can_accommodate`` says no.
+
+        Gives the caller a one-line guard: ``monitor.require_capacity(...)``
+        replaces a manual snapshot-then-compare block. The exception
+        message includes the free/required/margin numbers so the study
+        row's ``error_message`` carries a usable diagnostic.
+        """
+        if required_mb <= 0:
+            return
+        snap = self.snapshot()
+        if not snap.available:
+            return
+        margin = required_mb * (safety_margin_pct / 100.0)
+        needed = required_mb + margin
+        if snap.free_mb < needed:
+            raise ResourceExhausted(
+                f"Not enough VRAM to load {model_label}: "
+                f"need ~{needed:.0f} MB (estimate {required_mb:.0f} MB + "
+                f"{safety_margin_pct:.0f}% safety margin), "
+                f"have {snap.free_mb:.0f} MB free of {snap.total_mb:.0f} MB."
+            )
 
     def reset_peak(self) -> None:
         """Clear the peak counter. Call at the start of a benchmark run."""

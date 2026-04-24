@@ -48,6 +48,17 @@ _DEFAULTS: Final[dict[str, dict[str, Any]]] = {
     "limits": {
         "max_concurrent_runs": 1,
         "vram_warn_pct": 85.0,
+        # Wall-clock budget for a HuggingFace dataset fetch before the
+        # wrapper raises TimeoutError. A hung connection used to pin a
+        # background task forever; 600 s is generous enough for large
+        # downloads (Common Voice ~30 GB) without letting a stall stay
+        # invisible.
+        "dataset_fetch_timeout_s": 600.0,
+        # Per-segment timeout for backend.transcribe(). At 120 s the
+        # longest healthy whisper.cpp run on a 30 s clip still fits
+        # with headroom; anything beyond that is almost always a stuck
+        # worker process.
+        "segment_timeout_s": 120.0,
     },
     "bench": {
         "lang": "",
@@ -115,6 +126,8 @@ class StorageConfig:
 class LimitsConfig:
     max_concurrent_runs: int = _DEFAULTS["limits"]["max_concurrent_runs"]
     vram_warn_pct: float = _DEFAULTS["limits"]["vram_warn_pct"]
+    dataset_fetch_timeout_s: float = _DEFAULTS["limits"]["dataset_fetch_timeout_s"]
+    segment_timeout_s: float = _DEFAULTS["limits"]["segment_timeout_s"]
 
 
 @dataclass
@@ -196,6 +209,15 @@ def _build_config(data: dict[str, Any]) -> Config:
             lim.get("max_concurrent_runs", _DEFAULTS["limits"]["max_concurrent_runs"])
         ),
         vram_warn_pct=float(lim.get("vram_warn_pct", _DEFAULTS["limits"]["vram_warn_pct"])),
+        dataset_fetch_timeout_s=float(
+            lim.get(
+                "dataset_fetch_timeout_s",
+                _DEFAULTS["limits"]["dataset_fetch_timeout_s"],
+            )
+        ),
+        segment_timeout_s=float(
+            lim.get("segment_timeout_s", _DEFAULTS["limits"]["segment_timeout_s"])
+        ),
     )
 
     bench = BenchConfig(

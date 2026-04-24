@@ -284,7 +284,18 @@ async def _fetch_background(
 
         # DatasetManager does blocking I/O — run it off the event loop so
         # concurrent WS broadcasts and other requests keep responding.
-        await asyncio.to_thread(_do_fetch)
+        # A frozen HuggingFace stream used to pin this task forever; the
+        # configured timeout fails fast so the row flips to error and a
+        # human can investigate instead of watching a forever-spinner.
+        timeout_s = float(config.limits.dataset_fetch_timeout_s)
+        try:
+            await asyncio.wait_for(asyncio.to_thread(_do_fetch), timeout=timeout_s)
+        except TimeoutError as exc:
+            raise TimeoutError(
+                f"Dataset fetch exceeded configured timeout "
+                f"({timeout_s:.0f}s). Increase limits.dataset_fetch_timeout_s "
+                "in ~/.asrbench/config.toml for very large downloads."
+            ) from exc
 
         conn.cursor().execute(
             "UPDATE datasets SET verified = true WHERE dataset_id = ?",

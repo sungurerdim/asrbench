@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from pathlib import Path
@@ -67,10 +68,54 @@ class BenchmarkEngine:
         5. UPDATE runs.status = 'completed'
     """
 
-    def __init__(self, conn: duckdb.DuckDBPyConnection, *, cache_dir: Path) -> None:
+    def __init__(
+        self,
+        conn: duckdb.DuckDBPyConnection,
+        *,
+        cache_dir: Path,
+        segment_timeout_s: float | None = None,
+    ) -> None:
         self._conn = conn
         self._cache = TranscriptCache(cache_dir)
         self._wer = WEREngine()
+        # Per-segment backend.transcribe() timeout. ``None`` keeps the
+        # legacy "wait forever" behaviour; the API / CLI wires the value
+        # from config.limits.segment_timeout_s (default 120 s). A stuck
+        # worker used to pin the event loop until the user killed the
+        # whole process.
+        self._segment_timeout_s = segment_timeout_s
+
+    async def _transcribe_with_timeout(
+        self,
+        backend: BaseBackend,
+        audio: np.ndarray,
+        lang: str,
+        params: dict,
+    ) -> list:
+        """Run ``backend.transcribe`` off the event loop, optionally time-capped.
+
+        Always delegates to ``asyncio.to_thread`` so the event loop keeps
+        serving WebSocket pushes while a long transcription runs. When
+        ``self._segment_timeout_s`` is set, the call is further wrapped in
+        ``asyncio.wait_for``; on expiry the future is cancelled and
+        TimeoutError propagates up to the run's outer except clause.
+        """
+
+        def _call() -> list:
+            return backend.transcribe(audio, lang, params)
+
+        if self._segment_timeout_s is None or self._segment_timeout_s <= 0:
+            return await asyncio.to_thread(_call)
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(_call), timeout=self._segment_timeout_s)
+        except TimeoutError as exc:
+            raise TimeoutError(
+                f"backend.transcribe exceeded {self._segment_timeout_s:.0f}s "
+                "per-segment timeout. Raise limits.segment_timeout_s in "
+                "~/.asrbench/config.toml, or investigate why the backend "
+                "is stuck — this usually means a deadlocked CUDA kernel "
+                "or a child process that stopped consuming its input pipe."
+            ) from exc
 
     @staticmethod
     def _split_params(params: dict) -> tuple[dict, dict]:
@@ -164,7 +209,9 @@ class BenchmarkEngine:
                         seg.audio, preprocess_params, dataset.sample_rate
                     )
                     t0 = time.perf_counter()
-                    result_segs = backend.transcribe(processed_audio, dataset.lang, backend_params)
+                    result_segs = await self._transcribe_with_timeout(
+                        backend, processed_audio, dataset.lang, backend_params
+                    )
                     elapsed = time.perf_counter() - t0
 
                     hyp_text = " ".join(s.hyp_text for s in result_segs).strip()

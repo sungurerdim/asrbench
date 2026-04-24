@@ -87,7 +87,11 @@ def _prepare_shared(
     logger.info("%s: loading model %s", log_prefix, model_local_path)
     backend_instance.load(model_local_path, space.defaults())
 
-    engine = BenchmarkEngine(conn, cache_dir=config.storage.cache_dir)
+    engine = BenchmarkEngine(
+        conn,
+        cache_dir=config.storage.cache_dir,
+        segment_timeout_s=config.limits.segment_timeout_s,
+    )
     return conn, engine, backend_instance, space, objective, dm
 
 

@@ -160,7 +160,11 @@ async def _execute_single(
     logger.debug("Study %s: model loaded, starting optimizer", study_id)
 
     try:
-        engine = BenchmarkEngine(conn, cache_dir=config.storage.cache_dir)
+        engine = BenchmarkEngine(
+            conn,
+            cache_dir=config.storage.cache_dir,
+            segment_timeout_s=config.limits.segment_timeout_s,
+        )
         objective = build_objective(req.objective)
         budget = BudgetController(
             hard_cap=req.budget.hard_cap,

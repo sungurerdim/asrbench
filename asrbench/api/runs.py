@@ -627,7 +627,11 @@ async def _run_background(
             dm = DatasetManager(config, conn)
             prepared = dm.prepare(dataset_id)
 
-            engine = BenchmarkEngine(conn, cache_dir=config.storage.cache_dir)
+            engine = BenchmarkEngine(
+                conn,
+                cache_dir=config.storage.cache_dir,
+                segment_timeout_s=config.limits.segment_timeout_s,
+            )
             await engine.run(
                 run_id=run_id,
                 backend=backend_instance,
