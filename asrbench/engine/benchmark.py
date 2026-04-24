@@ -24,6 +24,37 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class RunCancelled(RuntimeError):
+    """Raised by the benchmark loop when the run's cancel flag is set.
+
+    Distinct from a generic RuntimeError so the outer background task
+    can write ``status='cancelled'`` instead of ``status='failed'``.
+    """
+
+    def __init__(self, run_id: str) -> None:
+        super().__init__(f"Run {run_id} was cancelled by request.")
+        self.run_id = run_id
+
+
+def _is_cancel_requested(conn: duckdb.DuckDBPyConnection, run_id: str) -> bool:
+    """Check the row's ``cancel_requested`` flag.
+
+    The engine shares a connection with the API, so a cursor-level read
+    sees the latest committed value even when the cancel is issued from
+    a different async task. Fails closed on any DB error: if we cannot
+    read the flag we assume no cancel.
+    """
+    try:
+        row = (
+            conn.cursor()
+            .execute("SELECT cancel_requested FROM runs WHERE run_id = ?", [run_id])
+            .fetchone()
+        )
+    except Exception:
+        return False
+    return bool(row and row[0])
+
+
 class BenchmarkEngine:
     """
     Run orchestrator: transcribe every segment, compute WER, persist results.
@@ -117,6 +148,9 @@ class BenchmarkEngine:
         try:
             total_segments = len(segments)
             for seg_index, seg in enumerate(segments, start=1):
+                if _is_cancel_requested(self._conn, run_id):
+                    raise RunCancelled(run_id)
+
                 cache_key = self._cache.key(
                     model_local_path, params, dataset.dataset_id, seg.idx, dataset.lang
                 )

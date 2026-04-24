@@ -1,4 +1,26 @@
-"""DuckDB connection manager and schema DDL for asrbench."""
+"""DuckDB connection manager and schema DDL for asrbench.
+
+Connection topology
+===================
+
+ASRbench keeps a single process-level connection (:func:`get_conn`) that
+the FastAPI request handlers and background tasks share. DuckDB
+serialises writes against the underlying file, and cursor-per-operation
+(``conn.cursor()``) is safe for concurrent reads within one connection.
+
+:func:`new_connection` opens a *fresh* connection to the same DB file.
+Use it only when:
+
+* A worker thread (``asyncio.to_thread``) needs DB access and the
+  singleton is still being held by a coroutine. Two separate connections
+  serialise through the file lock instead of through the GIL.
+* A long-running operation wants its own transaction scope that can be
+  torn down without affecting the shared connection.
+
+The singleton is intentionally not a context manager — changing that
+would ripple through every request handler. Use :func:`new_connection`
+where isolation matters.
+"""
 
 from __future__ import annotations
 
@@ -34,6 +56,23 @@ def connect(db_path: Path) -> duckdb.DuckDBPyConnection:
     conn = duckdb.connect(str(db_path))
     init_db(conn)
     return conn
+
+
+def new_connection() -> duckdb.DuckDBPyConnection:
+    """Open an independent connection to the configured DB file.
+
+    Skips schema init (the singleton already ran it on startup). Caller
+    is responsible for ``.close()`` — failing to do so leaks a DB file
+    handle but does not corrupt data. Use in short-lived helpers like
+    ``asyncio.to_thread`` callbacks where sharing the singleton would
+    cause contention.
+    """
+    from asrbench.config import get_config
+
+    config = get_config()
+    db_path = config.storage.db_path
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    return duckdb.connect(str(db_path))
 
 
 def reset() -> None:
@@ -89,15 +128,22 @@ def init_db(conn: duckdb.DuckDBPyConnection) -> None:
             lang       VARCHAR NOT NULL DEFAULT 'en',
             mode       VARCHAR NOT NULL DEFAULT 'model_compare',
             status     VARCHAR NOT NULL DEFAULT 'pending',
-            label      VARCHAR
+            label      VARCHAR,
+            cancel_requested BOOLEAN DEFAULT false,
+            error_message VARCHAR
         )
     """)
 
-    # Idempotent migration for existing databases
-    try:
-        conn.execute("ALTER TABLE runs ADD COLUMN label VARCHAR")
-    except duckdb.CatalogException:
-        pass  # column already exists
+    # Idempotent migrations for databases created before each column landed.
+    for col, col_type in [
+        ("label", "VARCHAR"),
+        ("cancel_requested", "BOOLEAN DEFAULT false"),
+        ("error_message", "VARCHAR"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {col_type}")
+        except duckdb.CatalogException:
+            pass  # column already exists
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS segments (
@@ -164,6 +210,7 @@ def init_db(conn: duckdb.DuckDBPyConnection) -> None:
         ("prior_study_id", "UUID"),
         ("screening_result", "JSON"),
         ("error_message", "VARCHAR"),
+        ("cancel_requested", "BOOLEAN DEFAULT false"),
     ]:
         try:
             conn.execute(f"ALTER TABLE optimization_studies ADD COLUMN {col} {col_type}")

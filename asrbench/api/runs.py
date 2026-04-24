@@ -20,23 +20,46 @@ router = APIRouter(prefix="/runs", tags=["runs"])
 
 _RETRYABLE_STATUSES: frozenset[str] = frozenset({"failed", "cancelled"})
 
-# Cancellation flags — API signals the background task through a shared
-# in-memory set that the task polls between segments. Survives only for the
-# lifetime of the process; after restart there is nothing to cancel since
-# previously running rows are stale.
-_cancel_requested: set[str] = set()
-
 
 def request_cancel(run_id: str) -> None:
-    _cancel_requested.add(run_id)
+    """Flag a run as cancellation-requested in the DB.
+
+    The flag lives on the ``runs`` row itself (``cancel_requested`` column)
+    so an externally-triggered cancel survives across worker restarts and
+    is visible to any process that shares the DB file — not just the
+    FastAPI process that received the request.
+    """
+    get_conn().cursor().execute(
+        "UPDATE runs SET cancel_requested = true WHERE run_id = ?",
+        [run_id],
+    )
 
 
 def is_cancel_requested(run_id: str) -> bool:
-    return run_id in _cancel_requested
+    """Return True iff the row's ``cancel_requested`` flag is set.
+
+    Benchmark engine polls this between segments; the check is cheap
+    (indexed primary-key lookup on a tiny table).
+    """
+    row = (
+        get_conn()
+        .cursor()
+        .execute("SELECT cancel_requested FROM runs WHERE run_id = ?", [run_id])
+        .fetchone()
+    )
+    return bool(row and row[0])
 
 
 def clear_cancel(run_id: str) -> None:
-    _cancel_requested.discard(run_id)
+    """Reset the cancel flag once a run reaches a terminal state.
+
+    Keeps the semantics from the old in-memory set: retry picks up a
+    fresh flag regardless of whether the previous attempt was cancelled.
+    """
+    get_conn().cursor().execute(
+        "UPDATE runs SET cancel_requested = false WHERE run_id = ?",
+        [run_id],
+    )
 
 
 class RunStartRequest(BaseModel):
@@ -577,7 +600,8 @@ async def _run_background(
     from asrbench.api.models import get_loaded_backend
     from asrbench.config import get_config
     from asrbench.data.dataset_manager import DatasetManager
-    from asrbench.engine.benchmark import BenchmarkEngine
+    from asrbench.engine.benchmark import BenchmarkEngine, RunCancelled
+    from asrbench.engine.errors import sanitize_error
 
     conn = get_conn()
     cur = conn.cursor()
@@ -617,11 +641,17 @@ async def _run_background(
             if auto_loaded:
                 backend_instance.unload()
 
+    except RunCancelled:
+        logger.info("Run %s cancelled by request", run_id)
+        cur.execute(
+            "UPDATE runs SET status = 'cancelled', error_message = NULL WHERE run_id = ?",
+            [run_id],
+        )
     except Exception as exc:
         logger.error("Run %s failed: %s", run_id, exc, exc_info=True)
         cur.execute(
-            "UPDATE runs SET status = 'failed' WHERE run_id = ?",
-            [run_id],
+            "UPDATE runs SET status = 'failed', error_message = ? WHERE run_id = ?",
+            [sanitize_error(exc), run_id],
         )
     finally:
         clear_cancel(run_id)

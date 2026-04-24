@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,14 +17,106 @@ from asrbench.config import get_config
 from asrbench.middleware.auth import LOOPBACK_HOSTS, AuthMiddleware, get_api_key
 from asrbench.middleware.rate_limit import RateLimitMiddleware
 
+if TYPE_CHECKING:
+    import duckdb
+
 logger = logging.getLogger(__name__)
 
 _LOCAL_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$"
 
+_STALE_STATUSES: tuple[str, ...] = ("pending", "running")
+"""Row states that are only valid while a process is alive.
+
+Any row still in one of these statuses on startup belongs to a previous
+process that died without finalising it (Ctrl-C, OOM kill, host crash).
+The startup recovery job rewrites them to ``failed`` so the UI does not
+show a forever-spinning job and new jobs can start.
+"""
+
+_SHUTDOWN_GRACE_SECONDS: float = 30.0
+"""Maximum time the shutdown hook waits for running jobs to observe the
+cancel flag before force-marking them ``cancelled``. 30 s is long enough
+for a segment-granularity benchmark to reach the next poll point but
+short enough that ``uvicorn`` does not lose patience and kill the
+process mid-SQL."""
+
+
+def _recover_stale_rows(conn: duckdb.DuckDBPyConnection) -> dict[str, int]:
+    """Mark orphaned ``pending`` / ``running`` rows as ``failed``.
+
+    Returns counts per table so the lifespan can emit a single warning
+    summarising the cleanup. Each UPDATE is idempotent — running it on
+    a cold DB is a no-op.
+    """
+    cur = conn.cursor()
+    recovered: dict[str, int] = {}
+
+    for table in ("runs", "optimization_studies"):
+        result = cur.execute(
+            f"UPDATE {table} "
+            "SET status = 'failed', "
+            "    error_message = 'startup recovery: previous process did not finalise this job' "
+            f"WHERE status IN ({','.join('?' * len(_STALE_STATUSES))})",
+            list(_STALE_STATUSES),
+        )
+        try:
+            recovered[table] = int(result.fetchone()[0])  # DuckDB returns changed count
+        except Exception:
+            recovered[table] = 0
+
+    return recovered
+
+
+_GRACE_ELAPSED_RUN_MSG = "shutdown: grace period elapsed before the run observed the cancel flag"
+_GRACE_ELAPSED_STUDY_MSG = (
+    "shutdown: grace period elapsed before the study observed the cancel flag"
+)
+
+
+async def _graceful_shutdown(conn: duckdb.DuckDBPyConnection) -> None:
+    """Signal cancellation to live jobs and wait up to 30 s.
+
+    Uses the ``cancel_requested`` column so a benchmark/optimiser loop
+    observes the request on its next segment boundary and exits cleanly
+    (rows end up ``status='cancelled'`` instead of ``failed``). If the
+    window elapses while rows are still ``running``, flip them to
+    ``cancelled`` anyway so the next startup's recovery job does not
+    mis-label them as ``failed``.
+    """
+    cur = conn.cursor()
+
+    cur.execute("UPDATE runs SET cancel_requested = true WHERE status = 'running'")
+    cur.execute("UPDATE optimization_studies SET cancel_requested = true WHERE status = 'running'")
+
+    deadline = asyncio.get_event_loop().time() + _SHUTDOWN_GRACE_SECONDS
+    while asyncio.get_event_loop().time() < deadline:
+        remaining = cur.execute(
+            "SELECT "
+            "  (SELECT count(*) FROM runs WHERE status = 'running') "
+            "+ (SELECT count(*) FROM optimization_studies WHERE status = 'running')"
+        ).fetchone()
+        if remaining is None or int(remaining[0]) == 0:
+            return
+        await asyncio.sleep(0.25)
+
+    cur.execute(
+        "UPDATE runs SET status = 'cancelled', error_message = ? WHERE status = 'running'",
+        [_GRACE_ELAPSED_RUN_MSG],
+    )
+    cur.execute(
+        "UPDATE optimization_studies SET status = 'cancelled', finished_at = now(), "
+        "error_message = ? WHERE status = 'running'",
+        [_GRACE_ELAPSED_STUDY_MSG],
+    )
+    logger.warning(
+        "Shutdown grace window (%.0fs) elapsed — force-cancelled any still-running jobs",
+        _SHUTDOWN_GRACE_SECONDS,
+    )
+
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI) -> AsyncGenerator[None]:  # noqa: ARG001
-    """Startup: init DB. Shutdown: close DB connection."""
+    """Startup: init DB + clean stale rows. Shutdown: drain + close DB."""
     from asrbench.db import get_conn, reset
 
     cfg = get_config()
@@ -42,9 +136,27 @@ async def _lifespan(_app: FastAPI) -> AsyncGenerator[None]:  # noqa: ARG001
             )
 
     logger.info("ASRbench %s starting up — initializing database", __version__)
-    get_conn()  # triggers init_db via connect()
+    conn = get_conn()
+
+    recovered = _recover_stale_rows(conn)
+    total_recovered = sum(recovered.values())
+    if total_recovered:
+        logger.warning(
+            "Startup recovery: %d runs + %d studies left in pending/running state "
+            "by a previous process were marked failed.",
+            recovered.get("runs", 0),
+            recovered.get("optimization_studies", 0),
+        )
+
     yield
-    logger.info("ASRbench shutting down")
+
+    logger.info(
+        "ASRbench shutting down — draining active jobs (grace: %ds)", int(_SHUTDOWN_GRACE_SECONDS)
+    )
+    try:
+        await _graceful_shutdown(conn)
+    except Exception as exc:
+        logger.warning("Graceful shutdown drain failed: %s", exc, exc_info=True)
     reset()
 
 
