@@ -50,8 +50,13 @@ pdf            = ["weasyprint>=62.0"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    "pytest-cov>=6.0",
+    "pytest-mock>=3.14",
+    "pytest-xdist>=3.6",
+    "hypothesis>=6.0",
     "ruff>=0.8",
     "mypy>=1.11",
+    "pre-commit>=4.0",
 ]
 
 [project.scripts]
@@ -66,6 +71,11 @@ whisper-cpp    = "asrbench.backends.whisper_cpp:WhisperCppBackend"
 
 [tool.hatch.version]
 path = "asrbench/_version.py"
+
+[tool.hatch.metadata]
+# The `tr` extra pulls trnorm straight from GitHub. Direct references
+# are required for that to resolve under Hatchling's metadata validator.
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["asrbench"]
@@ -86,3 +96,27 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths    = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["asrbench"]
+omit = [
+    "asrbench/_version.py",
+    # UI bundling helpers don't carry runtime code paths worth gating.
+    "asrbench/static/*",
+]
+
+[tool.coverage.report]
+# Keep the gate at 70 % while Faz 9 raises coverage to 80 %. Adjust
+# upward in lockstep with the added tests — never relax the gate.
+fail_under = 70
+skip_empty = true
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "pragma: no cover",
+    "\\.\\.\\.",
+]
+
+[tool.coverage.html]
+directory = "htmlcov"

@@ -56,7 +56,7 @@ async def _subscribe_loop(
         while True:
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=_HEARTBEAT_INTERVAL_S)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 if not await _safe_send(ws, {"type": "heartbeat", "topic": topic}):
                     return
                 continue

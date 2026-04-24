@@ -1,0 +1,86 @@
+name: Release
+
+# A tag `v*` on master triggers:
+#   1. UI rebuild (so the wheel is known-fresh, not trusting whatever
+#      the commit happened to contain).
+#   2. Wheel + sdist build via `uv build`.
+#   3. Publish to PyPI via OIDC trusted publisher (no long-lived token).
+#
+# Prerequisites before cutting the first release:
+#   * https://pypi.org/manage/account/publishing/ — register this repo
+#     as a trusted publisher with the workflow file name `release.yml`
+#     and the job id `publish`. Until that lands, the publish step fails
+#     with a 403 and the human pushing the tag needs to finish setup.
+#   * Repo settings → Secrets: nothing needed on the PyPI side for OIDC.
+#     `PYPI_API_TOKEN` is a fallback only — delete once trusted publishing
+#     is live.
+
+on:
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build wheel + sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # CHANGELOG.md diff against previous tag
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Build UI bundle
+        working-directory: ui
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.11.7"
+
+      - name: Build wheel + sdist
+        run: uv build
+
+      - name: Show dist contents
+        run: ls -la dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/asrbench/
+    permissions:
+      # Required for PyPI trusted publishing via OIDC.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Publish to PyPI (trusted publisher)
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          # Leave `password` / `token` unset — OIDC covers auth.
+          print-hash: true
