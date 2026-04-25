@@ -30,6 +30,9 @@ scripts/benchmarks/results.tsv
 # Claude Code session state — never commit
 .claude/
 
+# ds-blueprint / ds-review / ds-fix audit artefacts — ephemeral
+.audit/*.json
+
 # Audio / model artifacts
 *.npy
 *.pt

@@ -70,22 +70,20 @@ Toolchain: ruff + mypy | pytest | hatchling build
 | Coverage | ≥ 70% |
 
 ### Current Scores
-| Dimension | Score | Status |
-|-----------|-------|--------|
-| Security & Privacy | 68 | WARN |
-| Code Quality | 71 | WARN |
-| Architecture | 85 | OK |
-| Performance | 90 | OK |
-| Resilience | 70 | WARN |
-| Testing | 58 | WARN |
-| Stack Health | 72 | WARN |
-| DX | 65 | WARN |
-| Documentation | 80 | OK |
-| Overall | 73 | WARN |
+| Dimension | Score | Prev | Delta | Status |
+|-----------|-------|------|-------|--------|
+| Security & Privacy | 92 | 92 | 0 | OK |
+| Code Quality | 89 | 85 | +4 | OK |
+| Architecture | 92 | 92 | 0 | OK |
+| Performance | 94 | 94 | 0 | OK |
+| Resilience | 93 | 93 | 0 | OK |
+| Testing | 85 | 85 | 0 | OK |
+| Stack Health | 88 | 88 | 0 | OK |
+| DX | 90 | 90 | 0 | OK |
+| Documentation | 92 | 92 | 0 | OK |
+| Overall | 91 | 90 | +1 | OK |
 
-### Run History
-<!-- cap: keep last 3 entries; older entries → docs/blueprint-history.md -->
-- 2026-04-10: ds-blueprint auto | Findings: 27 (1 CRITICAL, 11 HIGH, 14 MEDIUM, 1 LOW) | Fixed: 0 | Skipped: 0 | Failed: 0 | Overall →73/80
-- 2026-04-10: ds-docs auto | Generated README.md, CONTRIBUTING.md, CHANGELOG.md, docs/API.md | Fixed: 4 | Skipped: 0 | Failed: 0 | Docs 80→85
+### Last Run
+- 2026-04-25: ds-blueprint auto | Findings: 19 (0 HIGH, 4 MEDIUM, 15 LOW) | Fixed: 0 | Skipped: 0 | Failed: 0 | Overall 90→91
 
 ## End Blueprint Profile
