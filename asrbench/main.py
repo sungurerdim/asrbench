@@ -61,9 +61,13 @@ def _recover_stale_rows(conn: duckdb.DuckDBPyConnection) -> dict[str, int]:
             f"WHERE status IN ({','.join('?' * len(_STALE_STATUSES))})",
             list(_STALE_STATUSES),
         )
+        # DuckDB's UPDATE returns a cursor whose ``fetchone()`` yields
+        # ``(rowcount,)`` — or ``None`` when the executor returns early.
+        # Guard the indexing so a driver oddity never crashes startup.
+        row = result.fetchone()
         try:
-            recovered[table] = int(result.fetchone()[0])  # DuckDB returns changed count
-        except Exception:
+            recovered[table] = int(row[0]) if row else 0
+        except (TypeError, ValueError):
             recovered[table] = 0
 
     return recovered
