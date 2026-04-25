@@ -189,9 +189,8 @@ async def ws_vram(ws: WebSocket) -> None:
     await ws.accept()
     sampler = _ensure_vram_sampler()
     try:
-        await _subscribe_loop(ws, topic="vram")
-    except WebSocketDisconnect:
-        pass
+        with contextlib.suppress(WebSocketDisconnect):
+            await _subscribe_loop(ws, topic="vram")
     finally:
         sampler.release()
 
