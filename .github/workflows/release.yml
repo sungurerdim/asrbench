@@ -11,9 +11,6 @@ name: Release
 #     as a trusted publisher with the workflow file name `release.yml`
 #     and the job id `publish`. Until that lands, the publish step fails
 #     with a 403 and the human pushing the tag needs to finish setup.
-#   * Repo settings → Secrets: nothing needed on the PyPI side for OIDC.
-#     `PYPI_API_TOKEN` is a fallback only — delete once trusted publishing
-#     is live.
 
 on:
   push:
@@ -32,8 +29,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # CHANGELOG.md diff against previous tag
 
       - uses: actions/setup-node@v4
         with:
@@ -54,9 +49,6 @@ jobs:
 
       - name: Build wheel + sdist
         run: uv build
-
-      - name: Show dist contents
-        run: ls -la dist/
 
       - uses: actions/upload-artifact@v4
         with:
@@ -82,5 +74,4 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/
-          # Leave `password` / `token` unset — OIDC covers auth.
           print-hash: true

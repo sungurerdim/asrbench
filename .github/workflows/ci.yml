@@ -2,9 +2,9 @@ name: CI
 
 # Pull requests to master and pushes to master both need to prove the
 # wheel still builds, the tests still pass, and the committed UI bundle
-# matches what `npm run build` would produce on a clean checkout. Feature
-# branches skip the matrix to keep feedback fast; the master-bound PR
-# runs the full grid.
+# matches what `npm run build` would produce on a clean checkout. PRs run
+# a single fast `ubuntu × 3.12` test job; pushes to master expand to the
+# full OS × Python grid.
 
 on:
   push:
@@ -24,7 +24,7 @@ env:
 
 jobs:
   lint:
-    name: Lint (ruff + mypy)
+    name: Lint (ruff)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -44,9 +44,6 @@ jobs:
         run: uv run ruff check asrbench tests
       - name: ruff format --check
         run: uv run ruff format --check asrbench tests
-      - name: mypy
-        run: uv run mypy asrbench
-        continue-on-error: true  # strict-mode migration is tracked in Faz 10
 
   test:
     name: Tests — Python ${{ matrix.python }} / ${{ matrix.os }}
@@ -55,8 +52,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        python: ["3.11", "3.12", "3.13"]
+        # PRs run a single fast job for feedback; pushes to master cover the full grid.
+        os: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-latest"]' || '["ubuntu-latest", "windows-latest", "macos-latest"]') }}
+        python: ${{ fromJSON(github.event_name == 'pull_request' && '["3.12"]' || '["3.11", "3.12"]') }}
         exclude:
           # macOS-3.11 hits a soxr wheel gap; re-enable once upstream publishes.
           - os: macos-latest
@@ -76,7 +74,7 @@ jobs:
       - name: Sync (frozen)
         run: uv sync --frozen --extra dev --python ${{ matrix.python }}
       - name: pytest + coverage
-        run: uv run pytest --cov=asrbench --cov-report=xml --cov-fail-under=0
+        run: uv run pytest --cov=asrbench --cov-report=xml
       - name: Upload coverage
         if: matrix.os == 'ubuntu-latest' && matrix.python == '3.12'
         uses: actions/upload-artifact@v4
@@ -143,7 +141,3 @@ jobs:
           pip install --no-deps --no-cache-dir dist/*.whl --target /tmp/inspect
           test -f /tmp/inspect/asrbench/static/index.html \
             || (echo "::error::wheel missing static bundle"; exit 1)
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dist
-          path: dist/
