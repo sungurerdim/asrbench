@@ -38,6 +38,7 @@ Seed trials:
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -386,6 +387,48 @@ def exhaustive_search(
     )
 
 
+def _seed_int_trials(
+    seed_trials: list[TrialResult] | None, param_name: str
+) -> tuple[dict[int, TrialResult], list[TrialResult]]:
+    """Filter ``seed_trials`` down to the subset whose param value is a plain int."""
+    seed_by_value: dict[int, TrialResult] = {}
+    trials: list[TrialResult] = []
+    if not seed_trials:
+        return seed_by_value, trials
+    for t in seed_trials:
+        v = t.config.get(param_name)
+        if isinstance(v, int) and not isinstance(v, bool):
+            seed_by_value[int(v)] = t
+            trials.append(t)
+    return seed_by_value, trials
+
+
+def _probe_neighbours(
+    center: int,
+    step: int,
+    lo: int,
+    hi: int,
+    iter_idx: int,
+    budget: BudgetController,
+    probe: Callable[[int, str], TrialResult],
+) -> list[tuple[int, TrialResult]]:
+    """Evaluate center±step within [lo, hi] and return the reached candidates."""
+    candidates: list[tuple[int, TrialResult]] = []
+    left_val = center - step
+    right_val = center + step
+    # Per-probe budget check: a single loop iteration can burn up to 2
+    # trials, so we need to re-verify cap before each individual evaluate.
+    if left_val >= lo and budget.can_run():
+        candidates.append(
+            (left_val, probe(left_val, f"pattern-search iter {iter_idx} left={left_val}"))
+        )
+    if right_val <= hi and budget.can_run():
+        candidates.append(
+            (right_val, probe(right_val, f"pattern-search iter {iter_idx} right={right_val}"))
+        )
+    return candidates
+
+
 def pattern_search(
     executor: TrialExecutor,
     baseline_config: dict[str, Any],
@@ -415,18 +458,10 @@ def pattern_search(
 
     lo = int(param.min)
     hi = int(param.max)
-    center = int(baseline_config.get(param.name, param.default))
-    center = max(lo, min(hi, center))
+    center = max(lo, min(hi, int(baseline_config.get(param.name, param.default))))
     step = max(1, (hi - lo) // 4)
 
-    trials: list[TrialResult] = []
-    seed_by_value: dict[int, TrialResult] = {}
-    if seed_trials:
-        for t in seed_trials:
-            v = t.config.get(param.name)
-            if isinstance(v, int) and not isinstance(v, bool):
-                seed_by_value[int(v)] = t
-                trials.append(t)
+    seed_by_value, trials = _seed_int_trials(seed_trials, param.name)
 
     def probe(value: int, reasoning: str) -> TrialResult:
         value = max(lo, min(hi, value))
@@ -437,8 +472,7 @@ def pattern_search(
         trials.append(t)
         return t
 
-    t_center = probe(center, f"pattern-search center={center}")
-    best = t_center
+    best = probe(center, f"pattern-search center={center}")
     iterations = 0
     early_stopped = False
     early_stop_reason = ""
@@ -456,18 +490,7 @@ def pattern_search(
             early_stop_reason = "budget exhausted or converged"
             break
 
-        left_val = center - step
-        right_val = center + step
-        candidates: list[tuple[int, TrialResult]] = []
-        # Per-probe budget check: a single loop iteration can burn up to 2
-        # trials, so we need to re-verify cap before each individual evaluate.
-        if left_val >= lo and budget.can_run():
-            t_left = probe(left_val, f"pattern-search iter {i + 1} left={left_val}")
-            candidates.append((left_val, t_left))
-        if right_val <= hi and budget.can_run():
-            t_right = probe(right_val, f"pattern-search iter {i + 1} right={right_val}")
-            candidates.append((right_val, t_right))
-
+        candidates = _probe_neighbours(center, step, lo, hi, iterations, budget, probe)
         if not candidates:
             early_stopped = True
             early_stop_reason = "center at both bounds; nothing to explore"
@@ -480,13 +503,12 @@ def pattern_search(
         if is_improvement(best_cand, best, eps_min=eps_min):
             best = best_cand
             center = best_val  # Accept the move
-        else:
-            # No improvement at this step size — halve it
-            if step == 1:
-                early_stopped = True
-                early_stop_reason = "step=1 and no improvement in either direction"
-                break
-            step = max(1, step // 2)
+            continue
+        if step == 1:
+            early_stopped = True
+            early_stop_reason = "step=1 and no improvement in either direction"
+            break
+        step = max(1, step // 2)
 
     refined = _quadratic_refine(trials, baseline_config, param, executor, budget, phase=phase)
     if refined is not None:

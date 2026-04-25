@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import yaml
 
@@ -89,28 +89,45 @@ class ParamSpec:
             )
 
     def _validate_numeric(self, kind: Literal["int", "float"]) -> None:
+        self._validate_bounds_present()
+        self._validate_bounds_numeric()
+        if kind == "int":
+            self._validate_int_default()
+        else:
+            self._validate_float_default()
+        self._validate_range_and_default()
+        self._validate_step()
+
+    def _validate_bounds_present(self) -> None:
         if self.min is None or self.max is None:
             raise ValueError(f"Param '{self.name}' ({self.type}): 'min' and 'max' are required")
+
+    def _validate_bounds_numeric(self) -> None:
         if not isinstance(self.min, (int, float)) or not isinstance(self.max, (int, float)):
             raise ValueError(
                 f"Param '{self.name}' ({self.type}): min/max must be numeric, "
                 f"got min={self.min!r}, max={self.max!r}"
             )
-        if kind == "int":
-            if not (isinstance(self.min, int) and isinstance(self.max, int)):
-                raise ValueError(
-                    f"Param '{self.name}' (int): min and max must be integers, "
-                    f"got min={self.min!r}, max={self.max!r}"
-                )
-            if not isinstance(self.default, int) or isinstance(self.default, bool):
-                raise ValueError(
-                    f"Param '{self.name}' (int): default must be int, got {self.default!r}"
-                )
-        else:  # float
-            if not isinstance(self.default, (int, float)) or isinstance(self.default, bool):
-                raise ValueError(
-                    f"Param '{self.name}' (float): default must be numeric, got {self.default!r}"
-                )
+
+    def _validate_int_default(self) -> None:
+        if not (isinstance(self.min, int) and isinstance(self.max, int)):
+            raise ValueError(
+                f"Param '{self.name}' (int): min and max must be integers, "
+                f"got min={self.min!r}, max={self.max!r}"
+            )
+        if not isinstance(self.default, int) or isinstance(self.default, bool):
+            raise ValueError(
+                f"Param '{self.name}' (int): default must be int, got {self.default!r}"
+            )
+
+    def _validate_float_default(self) -> None:
+        if not isinstance(self.default, (int, float)) or isinstance(self.default, bool):
+            raise ValueError(
+                f"Param '{self.name}' (float): default must be numeric, got {self.default!r}"
+            )
+
+    def _validate_range_and_default(self) -> None:
+        assert self.min is not None and self.max is not None
         if self.min > self.max:
             raise ValueError(f"Param '{self.name}': min ({self.min}) must be <= max ({self.max})")
         if not (self.min <= self.default <= self.max):
@@ -118,11 +135,14 @@ class ParamSpec:
                 f"Param '{self.name}': default ({self.default}) must satisfy "
                 f"min ({self.min}) <= default <= max ({self.max})"
             )
-        if self.step is not None:
-            if not isinstance(self.step, (int, float)) or self.step <= 0:
-                raise ValueError(
-                    f"Param '{self.name}': step must be a positive number, got {self.step!r}"
-                )
+
+    def _validate_step(self) -> None:
+        if self.step is None:
+            return
+        if not isinstance(self.step, (int, float)) or self.step <= 0:
+            raise ValueError(
+                f"Param '{self.name}': step must be a positive number, got {self.step!r}"
+            )
 
     def enumerate_values(self, max_points: int = 64) -> list[Any]:
         """
@@ -225,7 +245,7 @@ class ParameterSpace:
 
     def get(self, name: str) -> ParamSpec:
         try:
-            return self._by_name[name]  # type: ignore[attr-defined]
+            return cast(ParamSpec, self._by_name[name])  # type: ignore[attr-defined]
         except KeyError as exc:
             raise KeyError(
                 f"Parameter '{name}' not found in space. Available: {self.names}"

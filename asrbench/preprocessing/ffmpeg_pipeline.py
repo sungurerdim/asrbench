@@ -107,6 +107,103 @@ def _require_ffmpeg() -> str:
 # ---------------------------------------------------------------------------
 
 
+def _resample_fragments(params: dict[str, Any], sr: int) -> list[str]:
+    target_sr = int(params.get("sample_rate", sr) or sr)
+    if target_sr == sr:
+        return []
+    # Upsample back to sr so the rest of the chain matches the caller's
+    # expected output rate. swresample will round-trip.
+    return [f"aresample={target_sr}", f"aresample={sr}"]
+
+
+def _notch_fragment(params: dict[str, Any], _sr: int) -> str | None:
+    hz = int(params.get("notch_hz", 0) or 0)
+    return f"bandreject=f={hz}:width_type=q:w=30" if hz > 0 else None
+
+
+def _highpass_fragment(params: dict[str, Any], _sr: int) -> str | None:
+    hz = int(params.get("highpass_hz", 0) or 0)
+    return f"highpass=f={hz}" if hz > 0 else None
+
+
+def _lowpass_fragment(params: dict[str, Any], _sr: int) -> str | None:
+    hz = int(params.get("lowpass_hz", 0) or 0)
+    return f"lowpass=f={hz}" if hz > 0 else None
+
+
+def _loudnorm_fragment(params: dict[str, Any], _sr: int) -> str | None:
+    # ``tp=-1.5`` (true-peak ceiling) is hardcoded. It is a functional
+    # knob (±2.4 pp in the SafeScribeAI phase1 sweep) but kept pinned
+    # to the EBU R128 streaming default because tuning it adds a
+    # dimension with negligible sensitivity on balanced corpora.
+    lufs_target = params.get("lufs_target")
+    if lufs_target is None:
+        return None
+    lra = float(params.get("lufs_lra", 7.0))
+    linear = "true" if params.get("loudnorm_linear", False) else "false"
+    return f"loudnorm=I={float(lufs_target)}:LRA={lra}:tp=-1.5:linear={linear}"
+
+
+def _compressor_fragment(params: dict[str, Any], _sr: int) -> str | None:
+    ratio = float(params.get("drc_ratio", 1.0) or 1.0)
+    return f"acompressor=ratio={ratio}:threshold=-20dB" if ratio > 1.0 else None
+
+
+def _limiter_fragment(params: dict[str, Any], _sr: int) -> str | None:
+    # ``attack=5`` and ``release=50`` are intentionally hardcoded. The
+    # SafeScribeAI phase1 WER sweep (wer_results_log.jsonl, 2026-04-14)
+    # tested ``release_ms ∈ {50, 150}`` across 6 runs × 3 datasets and
+    # every trial landed at Δwer_pp = 0.000 (bit-identical to baseline) —
+    # the release knob has zero measurable impact on WER in this regime.
+    ceiling_db = float(params.get("limiter_ceiling_db", 0.0) or 0.0)
+    if ceiling_db >= 0.0:
+        return None
+    limit_linear = 10.0 ** (ceiling_db / 20.0)
+    return f"alimiter=limit={limit_linear:.4f}:attack=5:release=50"
+
+
+def _noise_fragment(params: dict[str, Any], _sr: int) -> str | None:
+    strength = float(params.get("noise_reduce", 0.0) or 0.0)
+    if strength <= 0.0:
+        return None
+    nf_db = -30.0 * strength  # map [0..0.8] → [0..-24] dB
+    return f"afftdn=nf={nf_db:.1f}"
+
+
+def _preemph_fragment(params: dict[str, Any], _sr: int) -> str | None:
+    coef = float(params.get("preemph_coef", 0.0) or 0.0)
+    return f"aeval=val(0)-{coef}*val(-1)" if coef > 0.0 else None
+
+
+def _vad_fragment(params: dict[str, Any], _sr: int) -> str | None:
+    if not params.get("vad_trim", False):
+        return None
+    threshold_db = float(params.get("silence_threshold_db", -40.0))
+    min_duration = float(params.get("silence_min_duration_s", 0.5))
+    return (
+        "silenceremove="
+        f"start_periods=1:start_duration={min_duration}:"
+        f"start_threshold={threshold_db}dB:"
+        f"stop_periods=-1:stop_duration={min_duration}:"
+        f"stop_threshold={threshold_db}dB"
+    )
+
+
+# Dispatch table — order mirrors ``PreprocessingPipeline.apply`` so scipy
+# and ffmpeg backends produce equivalent outputs.
+_SINGLE_FRAGMENT_BUILDERS: tuple[Any, ...] = (
+    _notch_fragment,
+    _highpass_fragment,
+    _lowpass_fragment,
+    _loudnorm_fragment,
+    _compressor_fragment,
+    _limiter_fragment,
+    _noise_fragment,
+    _preemph_fragment,
+    _vad_fragment,
+)
+
+
 def build_filter_chain(params: dict[str, Any], *, sr: int) -> str:
     """
     Build an ``-af`` filter chain string from the preprocessing params dict.
@@ -121,96 +218,14 @@ def build_filter_chain(params: dict[str, Any], *, sr: int) -> str:
     """
     _validate_string_params(params)
 
-    filters: list[str] = []
-
-    # 1. Codec simulation — not implemented here; caller should pre-encode
-    #    via simulate_codec before invoking ffmpeg. FFmpeg's own opus
-    #    roundtrip would require an extra encode/decode cycle that the
-    #    scipy path does not model.
-    fmt = params.get("format", "none")
-    if fmt != "none":
-        # Explicit warning hook — the caller's split-backend wrapper handles
-        # codec sim in scipy even when the rest of the chain is ffmpeg.
-        pass
-
-    # 2. Resample simulation
-    target_sr = int(params.get("sample_rate", sr) or sr)
-    if target_sr != sr:
-        filters.append(f"aresample={target_sr}")
-        # Upsample back to sr so the rest of the chain matches the caller's
-        # expected output rate. swresample will round-trip.
-        filters.append(f"aresample={sr}")
-
-    # 3. Notch filter (mains hum) — FFmpeg equiv: bandreject
-    notch_hz = int(params.get("notch_hz", 0) or 0)
-    if notch_hz > 0:
-        filters.append(f"bandreject=f={notch_hz}:width_type=q:w=30")
-
-    # 4. Highpass
-    highpass_hz = int(params.get("highpass_hz", 0) or 0)
-    if highpass_hz > 0:
-        filters.append(f"highpass=f={highpass_hz}")
-
-    # 5. Lowpass
-    lowpass_hz = int(params.get("lowpass_hz", 0) or 0)
-    if lowpass_hz > 0:
-        filters.append(f"lowpass=f={lowpass_hz}")
-
-    # 6. LUFS loudness normalization
-    #
-    # ``tp=-1.5`` (true-peak ceiling) is hardcoded. It is a functional
-    # knob (±2.4 pp in the SafeScribeAI phase1 sweep) but kept pinned
-    # to the EBU R128 streaming default because tuning it adds a
-    # dimension with negligible sensitivity on balanced corpora.
-    lufs_target = params.get("lufs_target")
-    if lufs_target is not None:
-        lra = float(params.get("lufs_lra", 7.0))
-        linear = "true" if params.get("loudnorm_linear", False) else "false"
-        filters.append(f"loudnorm=I={float(lufs_target)}:LRA={lra}:tp=-1.5:linear={linear}")
-
-    # 7. DRC (compressor) — FFmpeg equiv: acompressor
-    drc_ratio = float(params.get("drc_ratio", 1.0) or 1.0)
-    if drc_ratio > 1.0:
-        filters.append(f"acompressor=ratio={drc_ratio}:threshold=-20dB")
-
-    # 8. Peak limiter — FFmpeg equiv: alimiter
-    #
-    # ``attack=5`` and ``release=50`` are intentionally hardcoded. The
-    # SafeScribeAI phase1 WER sweep (wer_results_log.jsonl, 2026-04-14)
-    # tested ``release_ms ∈ {50, 150}`` across 6 runs × 3 datasets and
-    # every trial landed at Δwer_pp = 0.000 (bit-identical to baseline) —
-    # the release knob has zero measurable impact on WER in this regime.
-    # ``attack`` was not varied in that run but is held to the broadcast
-    # default for the same reason (no evidence it moves the metric).
-    # The ceiling (``limit``) is the only WER-sensitive handle and stays
-    # tunable via ``limiter_ceiling_db``.
-    limiter_ceiling_db = float(params.get("limiter_ceiling_db", 0.0) or 0.0)
-    if limiter_ceiling_db < 0.0:
-        limit_linear = 10.0 ** (limiter_ceiling_db / 20.0)
-        filters.append(f"alimiter=limit={limit_linear:.4f}:attack=5:release=50")
-
-    # 9. Noise reduction — FFmpeg equiv: afftdn
-    noise_strength = float(params.get("noise_reduce", 0.0) or 0.0)
-    if noise_strength > 0.0:
-        nf_db = -30.0 * noise_strength  # map [0..0.8] → [0..-24] dB
-        filters.append(f"afftdn=nf={nf_db:.1f}")
-
-    # 10. Pre-emphasis — FFmpeg has no direct preemphasis filter; use aeval
-    preemph_coef = float(params.get("preemph_coef", 0.0) or 0.0)
-    if preemph_coef > 0.0:
-        filters.append(f"aeval=val(0)-{preemph_coef}*val(-1)")
-
-    # 11. VAD trim — FFmpeg equiv: silenceremove (leading + trailing + middle)
-    if params.get("vad_trim", False):
-        threshold_db = float(params.get("silence_threshold_db", -40.0))
-        min_duration = float(params.get("silence_min_duration_s", 0.5))
-        filters.append(
-            f"silenceremove="
-            f"start_periods=1:start_duration={min_duration}:"
-            f"start_threshold={threshold_db}dB:"
-            f"stop_periods=-1:stop_duration={min_duration}:"
-            f"stop_threshold={threshold_db}dB"
-        )
+    # Codec simulation is handled outside ffmpeg; caller pre-encodes via
+    # simulate_codec because FFmpeg's own opus roundtrip would require an
+    # extra encode/decode cycle that the scipy path does not model.
+    filters: list[str] = list(_resample_fragments(params, sr))
+    for builder in _SINGLE_FRAGMENT_BUILDERS:
+        fragment = builder(params, sr)
+        if fragment is not None:
+            filters.append(fragment)
 
     return ",".join(filters)
 

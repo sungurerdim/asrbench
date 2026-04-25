@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 import typer
@@ -79,47 +80,12 @@ def set_cmd(
     section, sub_key = key.split(".", 1)
     new_value_literal = _format_toml_scalar(value)
 
-    original = path.read_text(encoding="utf-8")
-    lines = original.splitlines()
-    in_section = False
-    updated = False
-
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped.startswith("["):
-            in_section = stripped == f"[{section}]"
-            continue
-        if not in_section:
-            continue
-        # Match both live ("key = ...") and commented ("# key = ...") lines.
-        live_prefix = f"{sub_key} ="
-        comment_prefix = f"# {sub_key} ="
-        if stripped.startswith(live_prefix) or stripped.startswith(comment_prefix):
-            lines[i] = f"{sub_key} = {new_value_literal}"
-            updated = True
-            break
-
-    if not updated:
-        # Key doesn't exist — append to section, or create section at end.
-        section_start = None
-        for i, line in enumerate(lines):
-            if line.strip() == f"[{section}]":
-                section_start = i
-                break
-        if section_start is None:
-            if lines and lines[-1].strip():
-                lines.append("")
-            lines.append(f"[{section}]")
-            lines.append(f"{sub_key} = {new_value_literal}")
-        else:
-            insert_at = section_start + 1
-            while insert_at < len(lines) and not lines[insert_at].strip().startswith("["):
-                insert_at += 1
-            lines.insert(insert_at, f"{sub_key} = {new_value_literal}")
+    lines = path.read_text(encoding="utf-8").splitlines()
+    if not _rewrite_existing_key(lines, section, sub_key, new_value_literal):
+        _append_key_to_section(lines, section, sub_key, new_value_literal)
 
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    # Invalidate the cached Config so the next reader sees the new value.
     from asrbench.config import get_config
 
     get_config.cache_clear()
@@ -127,18 +93,58 @@ def set_cmd(
     typer.echo(f"Set {key} = {new_value_literal} in {path}.")
 
 
+def _rewrite_existing_key(
+    lines: list[str], section: str, sub_key: str, new_value_literal: str
+) -> bool:
+    """Replace a live or commented ``sub_key`` line inside ``[section]``.
+
+    Returns True when the key was found and rewritten.
+    """
+    in_section = False
+    live_prefix = f"{sub_key} ="
+    comment_prefix = f"# {sub_key} ="
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("["):
+            in_section = stripped == f"[{section}]"
+            continue
+        if not in_section:
+            continue
+        if stripped.startswith(live_prefix) or stripped.startswith(comment_prefix):
+            lines[i] = f"{sub_key} = {new_value_literal}"
+            return True
+    return False
+
+
+def _append_key_to_section(
+    lines: list[str], section: str, sub_key: str, new_value_literal: str
+) -> None:
+    """Insert ``sub_key = value`` into ``[section]``, creating the section if absent."""
+    section_start = next(
+        (i for i, line in enumerate(lines) if line.strip() == f"[{section}]"),
+        None,
+    )
+    if section_start is None:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.append(f"[{section}]")
+        lines.append(f"{sub_key} = {new_value_literal}")
+        return
+
+    insert_at = section_start + 1
+    while insert_at < len(lines) and not lines[insert_at].strip().startswith("["):
+        insert_at += 1
+    lines.insert(insert_at, f"{sub_key} = {new_value_literal}")
+
+
 def _format_toml_scalar(raw: str) -> str:
     """Best-effort convert a CLI string into a typed TOML scalar."""
     lower = raw.lower()
     if lower in ("true", "false"):
         return lower
-    try:
+    with contextlib.suppress(ValueError):
         return str(int(raw))
-    except ValueError:
-        pass
-    try:
+    with contextlib.suppress(ValueError):
         return str(float(raw))
-    except ValueError:
-        pass
     escaped = raw.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
