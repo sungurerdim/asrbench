@@ -2,7 +2,6 @@
 
 [![PyPI](https://img.shields.io/pypi/v/asrbench.svg)](https://pypi.org/project/asrbench/)
 [![Python](https://img.shields.io/pypi/pyversions/asrbench.svg)](https://pypi.org/project/asrbench/)
-[![CI](https://github.com/sungurerdim/asrbench/actions/workflows/ci.yml/badge.svg)](https://github.com/sungurerdim/asrbench/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Fully local, multi-backend ASR benchmarking platform with automated
