@@ -81,7 +81,7 @@ class TwoStageResult:
     stage2: IAMSStudyResult
 
     @property
-    def best_trial(self):  # type: ignore[no-untyped-def]
+    def best_trial(self):
         """Final best — always the Stage-2 winner (measured on the bigger corpus)."""
         return self.stage2.best_trial
 

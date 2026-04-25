@@ -188,13 +188,14 @@ class QwenASRBackend(BaseBackend):
         text = self._processor.apply_chat_template(
             conversation, add_generation_prompt=True, tokenize=False
         )
-        inputs = self._processor(
+        raw_inputs = self._processor(
             text=text,
             audios=[audio],
             sampling_rate=_SAMPLE_RATE,
             return_tensors="pt",
             padding=True,
         )
+        inputs: dict[str, Any] = dict(raw_inputs)
         try:
             import torch
 

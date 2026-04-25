@@ -23,7 +23,7 @@ import numpy as np
 from asrbench.backends.base import BaseBackend, Segment
 
 if TYPE_CHECKING:
-    from pywhispercpp.model import Model  # type: ignore[import-untyped]
+    from pywhispercpp.model import Model
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +90,7 @@ class WhisperCppBackend(BaseBackend):
 
     def load(self, model_path: str, params: dict) -> None:
         try:
-            from pywhispercpp.model import Model  # type: ignore[import-not-found]
+            from pywhispercpp.model import Model
         except ImportError as exc:
             raise RuntimeError(
                 "whisper.cpp backend is not installed. "
@@ -175,7 +175,7 @@ def _cached_transcribe_kwargs() -> frozenset[str]:
     global _TRANSCRIBE_KWARGS_CACHE
     if _TRANSCRIBE_KWARGS_CACHE is not None:
         return _TRANSCRIBE_KWARGS_CACHE
-    from pywhispercpp.model import Model  # type: ignore[import-not-found]
+    from pywhispercpp.model import Model
 
     sig = inspect.signature(Model.transcribe)
     names = {

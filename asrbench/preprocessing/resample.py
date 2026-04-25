@@ -31,4 +31,5 @@ def simulate_resample(audio: np.ndarray, target_sr: int, native_sr: int = 16_000
         return audio
 
     down = soxr.resample(audio, native_sr, target_sr)
-    return soxr.resample(down, target_sr, native_sr)
+    result: np.ndarray = soxr.resample(down, target_sr, native_sr)
+    return result

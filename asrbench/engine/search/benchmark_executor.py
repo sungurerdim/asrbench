@@ -34,7 +34,7 @@ from asrbench.engine.search.objective import Objective
 from asrbench.engine.search.trial import TrialResult, canonical_config_repr
 
 if TYPE_CHECKING:
-    import duckdb  # type: ignore[import-untyped]
+    import duckdb
 
     from asrbench.data.dataset_manager import PreparedDataset
     from asrbench.engine.benchmark import BenchmarkEngine

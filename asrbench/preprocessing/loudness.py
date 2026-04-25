@@ -59,7 +59,7 @@ def normalize_lufs(
     if duration_s < _MIN_DURATION_S:
         return audio
 
-    import pyloudnorm as pyln  # type: ignore[import-not-found]
+    import pyloudnorm as pyln
 
     meter = pyln.Meter(sr)
     current_lufs = meter.integrated_loudness(audio)
@@ -75,7 +75,8 @@ def normalize_lufs(
         # FFmpeg backend.
         audio = _soft_compress_toward_lra(audio, current_lufs, lra, sr)
 
-    return pyln.normalize.loudness(audio, current_lufs, target_lufs)
+    normalised: np.ndarray = pyln.normalize.loudness(audio, current_lufs, target_lufs)
+    return normalised
 
 
 def _soft_compress_toward_lra(

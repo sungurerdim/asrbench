@@ -109,7 +109,7 @@ class MultiDatasetTrialExecutor:
         metrics (prefixed with the dataset label).
         """
         components: list[tuple[str, TrialResult]] = []
-        for label, executor in zip(self.labels or [], self.executors, strict=False):  # type: ignore[arg-type]
+        for label, executor in zip(self.labels or [], self.executors, strict=False):
             component_reasoning = reasoning or phase
             trial = executor.evaluate(
                 config,
@@ -183,10 +183,10 @@ class MultiDatasetTrialExecutor:
         chaining with ``MultiFidelityTrialExecutor`` at the outer level.
         """
         components: list[tuple[str, TrialResult]] = []
-        for label, executor in zip(self.labels or [], self.executors, strict=False):  # type: ignore[arg-type]
+        for label, executor in zip(self.labels or [], self.executors, strict=False):
             component_reasoning = reasoning or phase
             if hasattr(executor, "evaluate_at_fraction"):
-                trial = executor.evaluate_at_fraction(  # type: ignore[attr-defined]
+                trial = executor.evaluate_at_fraction(
                     config,
                     phase=phase,
                     reasoning=f"[{label}] {component_reasoning}",

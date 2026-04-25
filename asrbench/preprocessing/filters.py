@@ -163,7 +163,8 @@ def apply_limiter(audio: np.ndarray, ceiling_db: float) -> np.ndarray:
         return audio
 
     ceiling_lin = 10.0 ** (ceiling_db / 20.0)
-    return (ceiling_lin * np.tanh(audio / ceiling_lin)).astype(np.float32)
+    limited: np.ndarray = (ceiling_lin * np.tanh(audio / ceiling_lin)).astype(np.float32)
+    return limited
 
 
 def apply_drc(audio: np.ndarray, ratio: float, threshold_db: float = -20.0) -> np.ndarray:
@@ -199,4 +200,5 @@ def apply_drc(audio: np.ndarray, ratio: float, threshold_db: float = -20.0) -> n
     compressed_overshoot = overshoot ** (1.0 / ratio)
     gain[above] = compressed_overshoot / overshoot
 
-    return (audio * gain).astype(np.float32)
+    compressed: np.ndarray = (audio * gain).astype(np.float32)
+    return compressed

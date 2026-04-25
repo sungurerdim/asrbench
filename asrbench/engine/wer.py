@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 _tr_normalize: Any = None
 
 try:
-    from trnorm import normalize as _trnorm_fn  # type: ignore[import-untyped]
+    from trnorm import normalize as _trnorm_fn
 
     _tr_normalize = _trnorm_fn
     _TRNORM_AVAILABLE = True

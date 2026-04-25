@@ -71,7 +71,8 @@ def _is_loopback_client(scope: Scope) -> bool:
 
 def _extract_api_key(scope: Scope) -> str | None:
     """Read the ``X-API-Key`` header value, returning ``None`` if absent."""
-    for name, value in scope.get("headers", []):
+    headers: list[tuple[bytes, bytes]] = scope.get("headers", [])
+    for name, value in headers:
         if name.lower() == _API_KEY_HEADER:
             try:
                 return value.decode("latin-1").strip()

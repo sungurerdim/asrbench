@@ -208,7 +208,7 @@ def suggest_epsilon(
     """
     n_words = max(1.0, dataset_duration_s * wpm / 60.0)
     se = (base_wer * (1.0 - base_wer) / n_words) ** 0.5
-    return round(safety * se, 3)
+    return float(round(safety * se, 3))
 
 
 def sensitivity_score(

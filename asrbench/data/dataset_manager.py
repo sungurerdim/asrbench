@@ -312,7 +312,7 @@ class DatasetManager:
         idx = 0
 
         for sample in ds:
-            row: dict[str, Any] = dict(sample)  # type: ignore[arg-type]
+            row: dict[str, Any] = dict(sample)
             audio_data: dict[str, Any] = row[audio_col]
             text = row.get(text_col, "") or ""
 

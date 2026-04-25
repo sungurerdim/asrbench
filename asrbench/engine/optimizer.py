@@ -193,7 +193,7 @@ class IAMSOptimizer:
         noise-sensitive and need full-fidelity measurements.
         """
         if self._mf_executor is not None:
-            return self._mf_executor  # type: ignore[return-value]
+            return self._mf_executor
         return self.executor
 
     def run(self) -> IAMSStudyResult:

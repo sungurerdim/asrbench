@@ -155,14 +155,14 @@ class CompareEngine:
         if not a or not b or len(a) != len(b):
             return None
         try:
-            from scipy.stats import wilcoxon  # type: ignore[import-untyped]
+            from scipy.stats import wilcoxon
         except ImportError:
             logger.debug("scipy not installed — Wilcoxon comparison skipped")
             return None
         try:
             result = wilcoxon(a, b, zero_method="wilcox")
             # scipy.stats.wilcoxon returns a namedtuple; second field is the p-value.
-            return float(result[1])  # type: ignore[arg-type]
+            return float(result[1])
         except Exception as exc:
             logger.debug("Wilcoxon test failed: %s", exc)
             return None

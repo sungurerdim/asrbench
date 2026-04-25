@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 from pathlib import Path
+from typing import Any, cast
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +71,7 @@ class TranscriptCache:
         """
         path = self._dir / f"{cache_key}.json"
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            return cast(dict[str, Any], json.loads(path.read_text(encoding="utf-8")))
         except FileNotFoundError:
             return None
         except (json.JSONDecodeError, OSError) as exc:

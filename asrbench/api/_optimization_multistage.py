@@ -162,7 +162,7 @@ async def _execute_two_stage(
         stage_ids = [stage1_study_id, stage2_study_id]
         factory_calls = {"n": 0}
 
-        def dataset_loader(duration_s: int):  # type: ignore[no-untyped-def]
+        def dataset_loader(duration_s: int):
             current = stage_ids[min(factory_calls["n"], 1)]
             logger.info(
                 "Two-stage %s: preparing dataset %s (cap=%ds)",
@@ -172,7 +172,7 @@ async def _execute_two_stage(
             )
             return dm.prepare(req.dataset_id, max_duration_s=float(duration_s))
 
-        def executor_factory(prepared, duration_s):  # type: ignore[no-untyped-def]
+        def executor_factory(prepared, duration_s):
             _ = duration_s
             current = stage_ids[min(factory_calls["n"], 1)]
             factory_calls["n"] += 1
@@ -278,7 +278,7 @@ async def _execute_global(
         weights = [ds.weight for ds in req.datasets]
         labels = [f"{ds.dataset_id[:8]}_{ds.lang}" for ds in req.datasets]
 
-        def dataset_loader(duration_s: int):  # type: ignore[no-untyped-def]
+        def dataset_loader(duration_s: int):
             current = stage_ids[min(factory_calls["n"], 1)]
             logger.info(
                 "Global-config %s: preparing %d datasets at cap=%ds",
@@ -290,7 +290,7 @@ async def _execute_global(
                 dm.prepare(ds.dataset_id, max_duration_s=float(duration_s)) for ds in req.datasets
             ]
 
-        def executor_factory(prepared_bundle, duration_s):  # type: ignore[no-untyped-def]
+        def executor_factory(prepared_bundle, duration_s):
             _ = duration_s
             current = stage_ids[min(factory_calls["n"], 1)]
             factory_calls["n"] += 1

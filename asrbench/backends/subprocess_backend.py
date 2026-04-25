@@ -39,7 +39,8 @@ def _resolve_backend_cls(backend_name: str) -> type[BaseBackend]:
     eps = importlib.metadata.entry_points(group="asrbench.backends")
     for ep in eps:
         if ep.name == backend_name:
-            return ep.load()  # type: ignore[return-value]
+            loaded: type[BaseBackend] = ep.load()
+            return loaded
     available = ", ".join(ep.name for ep in eps)
     raise RuntimeError(
         f"Backend '{backend_name}' not found in entry-points. "

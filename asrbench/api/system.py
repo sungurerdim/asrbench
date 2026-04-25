@@ -49,7 +49,7 @@ async def vram() -> VRAMResponse:
 
     name = "GPU 0"
     try:
-        raw = monitor._pynvml.nvmlDeviceGetName(monitor._handle)  # type: ignore[union-attr]
+        raw = monitor._pynvml.nvmlDeviceGetName(monitor._handle)
         if isinstance(raw, bytes):
             raw = raw.decode("utf-8")
         name = str(raw)
