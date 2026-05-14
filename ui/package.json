@@ -11,7 +11,7 @@
     "gen-types": "openapi-typescript http://127.0.0.1:8765/openapi.json -o src/lib/types.gen.ts"
   },
   "dependencies": {
-    "svelte": "^5.0.0"
+    "svelte": "^5.55.7"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^5.0.0",
